@@ -90,6 +90,23 @@ describe('validateInput 非法输入', () => {
     assert.doesNotMatch(r.error.message, /仅标点/, '纯空白应命中 trim 分支，而非归一化分支');
   });
 
+  // Issue #34 第二层：纯虚词输入（与、和）此前能骗过「归一化后非空」，却在下游片段剥离后变空 → 500
+  test('experience 仅虚词（与、和）→ 400 引导，不得放行', () => {
+    for (const experience of ['与、和', '的了和', '的', '与', '和']) {
+      const r = validateInput({ ...valid, experience });
+      assert.equal(r.ok, false, `「${experience}」应被拦下`);
+      assert.equal(r.error.detail.field, 'experience');
+      assert.match(r.error.message, /仅有标点或虚词/, '应给出「仅有标点或虚词」的具体引导');
+    }
+  });
+
+  test('正常输入含虚词但不全是虚词 → 不得误伤', () => {
+    for (const experience of ['负责校园公众号运营', '参与社团活动', '在社团做公众号', '参与了产品设计']) {
+      const r = validateInput({ ...valid, experience });
+      assert.equal(r.ok, true, `「${experience}」不应被误伤`);
+    }
+  });
+
   test('jd 为空', () => {
     const r = validateInput({ ...valid, jd: '' });
     assert.equal(r.ok, false);

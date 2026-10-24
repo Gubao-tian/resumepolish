@@ -61,6 +61,12 @@ export function validateInput(body) {
   if (normalizeForMatch(experience).length === 0) {
     return invalidInput('experience', '请粘贴一条简历经历（仅标点、符号或表情无法改写）');
   }
+  // Issue #34 第二层：纯虚词输入（如「与、和」「的了和」）能被上面两道放过，
+  // 却会在下游片段剥离后变空、回退成非子串兜底串 → 500。与其放行后失败，不如在此温柔拦下。
+  // 判定必须严格：剥离标点 + 虚词后**为空**才拦；正常输入都含「的/了/和」，不能误伤。
+  if (normalizeForMatch(experience).replace(/[的了和与及等其将已并]/g, '').length === 0) {
+    return invalidInput('experience', '请粘贴一条简历经历（仅有标点或虚词无法改写）');
+  }
   if (experience.length > MAX_EXPERIENCE_LEN) {
     return invalidInput('experience', `经历不能超过 ${MAX_EXPERIENCE_LEN} 字，请拆分成多条`);
   }
