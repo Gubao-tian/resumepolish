@@ -71,6 +71,8 @@ Content-Type: application/json
 | 500 | `INVALID_OUTPUT` | 重试后输出仍非法 | Schema/负面词/溯源校验失败 | 重试按钮 |
 | 500 | `INTERNAL_ERROR` | 服务端异常 | 未分类异常 | 重试按钮 |
 
+> 注：405 `METHOD_NOT_ALLOWED`（非 POST 请求）为服务端防御性输出，不计入上表六码；前端只发 POST 不会触发，触发时按 HTTP 状态兜底为 `INTERNAL_ERROR` 并原样展示服务端 message（来源：PR #6 交叉评审建议 1，2026-10-24 补记）。
+
 ## 5. 非功能约束
 
 - **超时预算**（工程师 1 Q1）：首调 15s；输出结构非法时重试一次（10s，temperature 保持 0.3，追加"严格按 Schema 输出"修复指令）；服务端总预算 ≤25s；前端 `AbortController` 30s。
