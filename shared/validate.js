@@ -114,6 +114,12 @@ export function validateOutput(parsed, sources) {
   });
 
   // 第 4 道：数字溯源（一票否决）。范围：rewritten + diff[].revised_segment（契约 §6）
+  // 取舍记录（PR #2 评审闭环，2026-10-24）：questions[].question 与 diff[].rationale 中的数字
+  // 不纳入溯源范围——question 是「反问」（如「从 3 个扩展到 5 个吗？」）、rationale 是「修改理由」，
+  // 两类字段的数字用于提问与解释、不构成事实陈述；强制溯源会大量误杀合法输出。
+  // 已接受风险：模型若在 question/rationale 中编造数字，本道拦截不到——由 Prompt 溯源红线
+  // （shared/prompt.js「不得换算放大、不得新造」）与人工评分兜底；扩展溯源至两类字段并观察
+  // 误报率已列为 V1.1 测试项（工程师 2 台账）。
   const numberTargets = [['rewritten', value.rewritten], ...value.diff.map((d, i) => [`diff[${i}].revised_segment`, d.revised_segment])];
   for (const [label, text] of numberTargets) {
     for (const num of extractNumbers(text)) {
