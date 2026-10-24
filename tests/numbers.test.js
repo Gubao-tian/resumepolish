@@ -53,6 +53,10 @@ describe('extractNumbers', () => {
     assert.deepEqual(extractNumbers('一定提升效率'), []);
   });
 
+  test('"十分/一定"类副词走 NaN 分支，不误抽数字', () => {
+    assert.deepEqual(extractNumbers('效果十分理想，一定要量化'), []);
+  });
+
   test('多字中文数字串直接抽取', () => {
     assert.deepEqual(extractNumbers('预算十二万，历时三周'), ['120000', '3']);
   });
