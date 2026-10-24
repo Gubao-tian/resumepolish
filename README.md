@@ -39,13 +39,19 @@ MOCK=1 npm start        # http://localhost:8787
 
 ### 真实模型模式
 
-`.env` 中填写 `LLM_API_KEY`（默认 DeepSeek，OpenAI 兼容协议）：
+在 `.env` 中填写 `LLM_API_KEY`（默认 DeepSeek，OpenAI 兼容协议）。`.env` 由 `npm start` 自动加载，
+启动时终端会回显当前是「真实 LLM」还是「Mock 演示」模式（仅回显键名与数量，不打印任何值）：
 
 ```bash
 npm start               # http://localhost:8787
+# [dev-server] 已加载 .env：4 项生效
+# dev-server listening on http://127.0.0.1:8787（...） 模式=真实 LLM
 ```
 
-环境变量：`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `PORT` / `MOCK`（见 `.env.example`）。
+环境变量：`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_THINKING` / `PORT` / `MOCK`（见 `.env.example`）。
+已存在的环境变量**不会被 `.env` 覆盖**（平台注入优先）。默认模型为官方现行 ID `deepseek-flash`；
+默认关闭思考模式（`LLM_THINKING=disabled`）——因为官方 thinking 模式下 `temperature` 无效，
+详见 `docs/llm-selection.md` 第五节与裁决 #19。
 
 ### 开发模式（前端热更新）
 
@@ -90,7 +96,7 @@ Serverless handler（api/rewrite.js）
 
 ## 质量保障
 
-- **104 项 node:test 单测**：Prompt 构建、输入/输出七道校验、限流器、handler 集成（200/400/405/429/500/502/504/Mock 确定性）、前端契约适配（错误码映射/超时/结构校验）、dev-server HTTP 冒烟；
+- **139 项 node:test 单测**：Prompt 构建、输入/输出七道校验、限流器、handler 集成（200/400/405/429/500/502/504/Mock 确定性）、上游请求体构造与 thinking 下发策略、`.env` 加载器（不覆盖语义/缺失容错）、前端契约适配（错误码映射/超时/结构校验）、dev-server HTTP 冒烟；
 - **CI 门禁**：每次 push / PR 自动执行 `npm test` + `npm run build`（GitHub Actions，ubuntu-latest + Node 20）；
 - **压测工具**：`scripts/load-test.mjs` 提供 Mock 层两层压测（不烧钱）；
 - **挂起项**：真实样本回归集（T10，需 User A/B 各 ≥3 条）随 M2 单独提交；真实 LLM 调用实测（T9，≥30 次 P95）待用户提供 API Key 后执行，选型推演见 `docs/llm-selection.md`。
