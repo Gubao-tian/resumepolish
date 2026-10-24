@@ -119,6 +119,17 @@ describe('handleRewriteRequest 输入错误（400）', () => {
     assert.equal(r.status, 400);
     assert.match(r.body.error.message, /300/);
   });
+
+  test('jd 超 2000 字（与 experience 对偶的边界锁定，前端 LIMITS.jd 依赖）', async () => {
+    const r = await handleRewriteRequest({
+      body: { experience: VALID_BODY.experience, jd: '职'.repeat(2001) },
+      callLLM: fakeLLM(GOOD_OUTPUT),
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.error.code, 'INVALID_INPUT');
+    assert.equal(r.body.error.detail.field, 'jd');
+    assert.match(r.body.error.message, /2000/);
+  });
 });
 
 describe('handleRewriteRequest 限流（429）', () => {
