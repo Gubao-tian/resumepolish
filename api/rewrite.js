@@ -56,6 +56,41 @@ function inSpans(spans, i) {
 const SEGMENT_PUNCT = /[，。、；：！？,.;:!?]/;
 
 /**
+ * JD 中的**章节标题**——不是能力关键词，必须剔除（Issue #29）。
+ * 真实招聘启事几乎都是「岗位职责：1. …；2. …」的句子型结构，
+ * 这类标题被当成关键词后，前端会渲染成「待补充（JD 中出现）：岗位职责」，用户会直接懵。
+ */
+const JD_SECTION_HEADINGS = new Set([
+  '岗位职责', '任职要求', '岗位要求', '任职资格', '职位要求', '岗位描述', '职位描述',
+  '工作内容', '工作职责', '我们提供', '你将获得', '薪资福利', '福利待遇', '职位诱惑',
+  '公司介绍', '团队介绍', '关于我们', '加分项', '优先条件', '能力要求', '基本要求',
+]);
+
+/**
+ * 片段首尾的虚词单字——「对投放」「负责信息流投放与」这类被标点切碎的残片
+ * 需剥掉首尾虚词，否则会产出带拖尾的半残短语（Issue #29）。
+ */
+const JD_FUNCTION_CHAR = /^[的了对和与及等其将已在为以从到并把被让使给或因所很再又还就也很]$/;
+
+/** 剥掉片段首尾的虚词单字，直到两端都不再是虚词 */
+function stripFunctionChars(p) {
+  let s = p;
+  let changed = true;
+  while (changed && s.length > 0) {
+    changed = false;
+    if (JD_FUNCTION_CHAR.test(s[0])) {
+      s = s.slice(1);
+      changed = true;
+    }
+    if (s.length > 0 && JD_FUNCTION_CHAR.test(s[s.length - 1])) {
+      s = s.slice(0, -1);
+      changed = true;
+    }
+  }
+  return s.trim();
+}
+
+/**
  * 按标点切成子句，各子句记录其在原文中的 [start, end) 位置。
  * 位于数字内部的标点（如 3.2 的 "."）不作为切分点。
  * @param {string} text
@@ -125,6 +160,8 @@ const JD_STOPWORDS = new Set([
   '产品经理实习生', '产品经理', '运营实习生', '产品实习生', '数据分析师', '运营专员',
   '产品助理', '运营助理', '算法工程师', '前端工程师', '后端工程师', '测试工程师',
   '实习生', '专员', '助理', '经理', '主管', '总监', '校招', '社招', '全职', '兼职',
+  // 句子型 JD 里描述「掌握程度」的动词：单独出现时不是能力词
+  '会用', '使用', '掌握', '了解', '精通', '擅长', '输出', '完成', '推动', '维护', '跟进',
 ]);
 
 /**
@@ -140,32 +177,40 @@ function extractJdKeywords(jd, rewritten) {
     .map((s) => s.trim())
     .filter((s) => s.length >= 2 && s.length <= 8);
   const seen = new Set();
-  const out = [];
+  const candidates = [];
   for (const p of parts) {
-    if (out.length >= 5) break;
     // 剥离职位/方向类后缀：「内容运营实习」→「内容运营」。
     // 与其穷举职位名，不如统一剥后缀——剥离后仍是 JD 的子串，不改变溯源口径。
-    const kw = p.replace(/(?:实习生|实习|岗|方向|相关|能力|经验)$/, '');
-    if (kw.length < 2 || JD_STOPWORDS.has(kw) || seen.has(kw) || !/[\u4e00-\u9fa5A-Za-z]/.test(kw)) continue;
+    // 后缀剥离：末尾的「及以上」也一并剥掉，使「本科及以上」→「本科」→ 命中学历类停用词被剔除
+    // （学历门槛不是能力关键词，真实 JD 的任职要求里很常见）
+    let kw = p.replace(/(?:实习生|实习|岗|方向|相关|能力|经验|及以上|以上|以下)$/, '');
+    // 剥首尾虚词：句子型 JD 被标点切碎后会产生「对投放效果负责」「负责信息流投放与」这类残片
+    kw = stripFunctionChars(kw);
+    if (kw.length < 2) continue;
+    // 章节标题不是能力关键词（「待补充（JD 中出现）：岗位职责」对用户毫无意义）
+    if (JD_SECTION_HEADINGS.has(kw)) continue;
+    // 纯英文片段过短（如从「AB 测试」里切出的「AB」）无意义；≥3 字母的 ROI / SQL / Excel 保留
+    if (/^[A-Za-z]{1,2}$/.test(kw)) continue;
+    if (JD_STOPWORDS.has(kw) || seen.has(kw) || !/[\u4e00-\u9fa5A-Za-z]/.test(kw)) continue;
     seen.add(kw);
+    candidates.push(kw);
+  }
+  // 句子型 JD 切出的是**句子片段**（「负责信息流投放」），而真实的能力名词通常更短
+  // （「数据敏感」「SQL」「Excel」）。按长度升序优先，让能力词排在长句片段之前。
+  candidates.sort((a, b) => a.length - b.length);
+  const picked = candidates.slice(0, 5);
+  if (picked.length === 0 && jd.trim().length > 0) {
+    // JD 切不出候选时至少给一项，避免 keywords 为空导致演示效果缺失
+    picked.push(stripFunctionChars(jd.trim().slice(0, 6)) || jd.trim().slice(0, 6));
+  }
+  return picked.map((kw) => {
     const hit = rewritten.includes(kw);
-    out.push({
+    return {
       keyword: kw,
       status: hit ? 'hit' : 'missing',
       source_hint: hit ? '已在改写文中体现' : '可从你与该词相关的经历中挖掘后补充',
-    });
-  }
-  if (out.length === 0 && jd.trim().length > 0) {
-    // JD 切不出候选（如纯英文长短语）时至少给一项，避免 keywords 为空导致演示效果缺失
-    const fallback = jd.trim().slice(0, 6);
-    const hit = rewritten.includes(fallback);
-    out.push({
-      keyword: fallback,
-      status: hit ? 'hit' : 'missing',
-      source_hint: hit ? '已在改写文中体现' : '可从你与该词相关的经历中挖掘后补充',
-    });
-  }
-  return out;
+    };
+  });
 }
 
 /** 数字追问的固定文案：保持稳定，使「已回答则不重复问」的判定不因文案变化而失效 */
@@ -201,17 +246,23 @@ export function mockChatCompletion({ experience = '', jd = '', followups = [] } 
   // 只认阿拉伯数字：中文数字（如「一场活动」的「一」）不算「可量化成果」，
   // 否则用户写「来了大概几百人」也会被判定为已有数字而不再追问。
   const hasNumber = /\d/.test(slice);
-  const supplied = answersText.match(/\d+(?:\.\d+)?\s*(?:万元|亿元|万人|千人|万|个|人|次|篇|条|份|%|％)?/);
+  // 取答案中的**全部**数字（最多 4 个，避免改写文过长）。
+  // 只取首个会让用户填的其余数据被静默丢弃——User A 复验时填了「6 篇，阅读量 1200，平均 400，涨粉 80」，
+  // 结果只剩「6 篇」，而最有说服力的恰恰是阅读量与涨粉，观感上仍是「没完全听进去」。
+  // 这些数字均来自 followupText（契约 §6 溯源白名单），全部引用不构成虚构。
+  const suppliedNums = (
+    answersText.match(/\d+(?:\.\d+)?\s*(?:万元|亿元|万人|千人|万|个|人|次|篇|条|份|%|％)?/g) ?? []
+  ).slice(0, 4);
   const resultPart = hasNumber
     ? ''
-    : supplied
-      ? `，可量化成果为 ${supplied[0]}`
+    : suppliedNums.length > 0
+      ? `，可量化成果为 ${suppliedNums.join('、')}`
       : `，可量化成果为${PLACEHOLDER_TOKEN}`;
 
   const rewritten = `${lead}${core}${resultPart}`;
   const asked = new Set(followups.map((f) => String(f?.question ?? '')));
   const questions = [];
-  if (!hasNumber && !supplied && !asked.has(NUMBER_QUESTION)) {
+  if (!hasNumber && suppliedNums.length === 0 && !asked.has(NUMBER_QUESTION)) {
     questions.push({ question: NUMBER_QUESTION, blocking: false, reason: '缺少数字成果，影响面试说服力' });
   }
 
@@ -380,12 +431,15 @@ export async function handleRewriteRequest({
   const rl = limiter.check(ip);
   if (!rl.allowed) {
     // Issue #24：限流按 IP 计数，而校园网/公司网等 NAT 出口下同一 IP 由多人共用，
-    // 用户可能一次都没提交过却看到「请求过于频繁」。文案需说明真实原因，避免被误认为产品故障。
+    // 用户可能一次都没提交过却被拦。
+    // 文案要点（User A 复验反馈）：原写法「请求过于频繁，请 N 秒后再试（额度按网络出口统计…）」
+    // 主句与括号自相矛盾——既然是同网用户合并计算，那就不该说成是「你」频繁。
+    // 改为把真实原因放在主句，避免把责任归到用户头上。
     return finish(
       errorResponse(
         429,
         'RATE_LIMITED',
-        `请求过于频繁，请 ${rl.retryAfterSec} 秒后再试（额度按网络出口统计，校园网/公司网下会与同网用户合并计算）`,
+        `已达当前网络出口的用量上限（校园网/公司网下与同网用户合并计算），请 ${rl.retryAfterSec} 秒后再试或换个网络`,
         undefined,
         { 'Retry-After': String(rl.retryAfterSec) }
       )
