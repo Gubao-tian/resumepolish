@@ -68,6 +68,21 @@ describe('Mock 消费 followups（Issue #19/#23：FR-6 不得失效）', () => {
     assert.match(r.rewritten, /3\.2 万元/, `改写文应消费补充答案，实际=${r.rewritten}`);
   });
 
+  test('答案中的多个数字都被消费，而非只取首个', () => {
+    // User A 复验原场景：她填了四个数字，只取首个会静默丢弃「阅读量 1200 / 平均 400 / 涨粉 80」，
+    // 而最有说服力的恰恰是阅读量与涨粉——观感上仍是「没完全听进去」。
+    const r = mockChatCompletion({
+      experience: '在校园公众号写过几篇推文',
+      jd: '内容运营实习：内容生产',
+      followups: [
+        { question: '这段经历带来的可量化结果是多少？', answer: '6 篇，阅读量 1200，平均 400，涨粉 80' },
+      ],
+    });
+    for (const n of ['6 篇', '1200', '400', '80']) {
+      assert.ok(r.rewritten.includes(n), `应消费数字「${n}」，实际=${r.rewritten}`);
+    }
+  });
+
   test('不带答案与带答案的两次输出不同（证明补充真的被消费）', () => {
     const before = mockChatCompletion({ experience: EXP, jd: '运营实习生：投放优化' });
     const after = mockChatCompletion({ experience: EXP, jd: '运营实习生：投放优化', followups: answers });
