@@ -54,6 +54,13 @@ export function validateInput(body) {
   if (experience.trim().length === 0) {
     return invalidInput('experience', '请粘贴一条简历经历');
   }
+  // Issue #22：仅含标点/符号/emoji 的输入能骗过 trim()，却在下游 normalizeForMatch() 归一化后归零
+  // （该函数剥掉 \p{P}\p{Z}\p{C}\p{S} 四类），使输出校验第 3 道（original_segment 归一化后长度 0）
+  // 对**任何**模型输出都必然失败 → 500 INVALID_OUTPUT，且真实链路会白烧「首调 15s + 重试 10s」两次调用。
+  // 此处统一为「归一化后非空」，让输入校验与输出校验使用同一个「空」的口径。
+  if (normalizeForMatch(experience).length === 0) {
+    return invalidInput('experience', '请粘贴一条简历经历（仅标点、符号或表情无法改写）');
+  }
   if (experience.length > MAX_EXPERIENCE_LEN) {
     return invalidInput('experience', `经历不能超过 ${MAX_EXPERIENCE_LEN} 字，请拆分成多条`);
   }
@@ -63,6 +70,10 @@ export function validateInput(body) {
   const jd = sanitizeText(body.jd);
   if (jd.trim().length === 0) {
     return invalidInput('jd', '请粘贴目标岗位 JD，否则无法进行岗位对照改写');
+  }
+  // 与 experience 同口径（Issue #22）：JD 归一化后为空则无从提取关键词，应引导而非放行后失败
+  if (normalizeForMatch(jd).length === 0) {
+    return invalidInput('jd', '请粘贴目标岗位 JD（仅标点、符号或表情无法进行岗位对照）');
   }
   if (jd.length > MAX_JD_LEN) {
     return invalidInput('jd', `JD 不能超过 ${MAX_JD_LEN} 字，请精简至岗位职责与任职要求部分`);

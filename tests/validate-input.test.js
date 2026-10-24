@@ -53,6 +53,43 @@ describe('validateInput 非法输入', () => {
     assert.match(r.error.message, /300/);
   });
 
+  // Issue #22：仅标点/符号/emoji 的输入能骗过 trim()，却在下游 normalizeForMatch() 归一化后归零，
+  // 使输出校验第 3 道对任何输出都必然失败 → 500（真实链路还会白烧两次 LLM 调用）。
+  test('experience 仅标点 / 符号 / emoji（归一化后为空）→ 400 引导，不得放行', () => {
+    for (const experience of ['。', '！！！', '，，，', '🎉', '🎉🎉', '￥', '……', '、；？！', '***', '---']) {
+      const r = validateInput({ ...valid, experience });
+      assert.equal(r.ok, false, `「${experience}」应被拦下`);
+      assert.equal(r.error.code, 'INVALID_INPUT');
+      assert.equal(r.error.detail.field, 'experience');
+      assert.match(r.error.message, /请粘贴一条简历经历/);
+      assert.match(r.error.message, /仅标点/, '应给出「仅标点、符号或表情」的具体引导');
+    }
+  });
+
+  test('jd 仅标点 / 符号 / emoji（归一化后为空）→ 400 引导', () => {
+    for (const jd of ['。', '！！！', '🎉', '￥', '……']) {
+      const r = validateInput({ ...valid, jd });
+      assert.equal(r.ok, false, `jd「${jd}」应被拦下`);
+      assert.equal(r.error.detail.field, 'jd');
+      assert.match(r.error.message, /请粘贴目标岗位 JD/);
+    }
+  });
+
+  test('含 emoji / 英文 / 数字的正常输入不被误杀（归一化后非空）', () => {
+    for (const experience of ['🎉 负责校园公众号运营', 'Student Union 干事', '预算 3.2 万元', 'a', '1']) {
+      const r = validateInput({ ...valid, experience });
+      assert.equal(r.ok, true, `「${experience}」不应被拦下`);
+    }
+  });
+
+  test('全角空格仍走原有纯空白路径（trim 先行），文案不带「仅标点」补充', () => {
+    const r = validateInput({ ...valid, experience: '　' });
+    assert.equal(r.ok, false);
+    assert.equal(r.error.detail.field, 'experience');
+    assert.match(r.error.message, /请粘贴一条简历经历/);
+    assert.doesNotMatch(r.error.message, /仅标点/, '纯空白应命中 trim 分支，而非归一化分支');
+  });
+
   test('jd 为空', () => {
     const r = validateInput({ ...valid, jd: '' });
     assert.equal(r.ok, false);
