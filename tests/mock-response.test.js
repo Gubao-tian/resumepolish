@@ -261,6 +261,90 @@ describe('Issue #37 改写文不得超过 300 字符（片段长度预算）', (
   });
 });
 
+describe('Issue #36 补充：日期过滤不得误伤真实成果、不得漏网', () => {
+  const Q = '这段经历带来的可量化结果是多少？';
+  const answerTo = (answer) =>
+    mockChatCompletion({
+      experience: '在社团做公众号',
+      jd: JD_OPS,
+      followups: [{ question: Q, answer }],
+    }).rewritten;
+
+  test('裸四位数成果不得被误判为年份（曝光 2000 必须保留）', () => {
+    // 回归点：早先把「任意四位数字」当成年份过滤，会把用户填的真实成果静默删掉
+    assert.ok(answerTo('曝光 2000').includes('2000'), `「2000」是成果不是年份，实际=${answerTo('曝光 2000')}`);
+    assert.ok(answerTo('涨粉 2023').includes('2023'), `「2023」在此处是数量，实际=${answerTo('涨粉 2023')}`);
+  });
+
+  test('带 - / 年 / 月 分隔的日期不得漏网（只滤掉年份是不够的）', () => {
+    for (const [answer, junk] of [
+      ['2023-09 涨粉 300', '09'],
+      ['2023年6月涨粉 300', '2023'],
+      ['2023 年 6 月到 9 月，涨粉 300', '2023'],
+      ['2023.06.09 上线，阅读 800', '06'],
+    ]) {
+      const out = answerTo(answer);
+      assert.ok(!out.includes(junk), `日期片段「${junk}」不应作为成果出现，实际=${out}`);
+    }
+  });
+
+  test('日期剔除后真实成果必须保留', () => {
+    for (const [answer, keep] of [
+      ['2023-09 涨粉 300', '300'],
+      ['2023年6月涨粉 300', '300'],
+      ['6月9日活动，到场 300 人', '300 人'],
+      ['2023.06.09 上线，阅读 800', '800'],
+    ]) {
+      assert.ok(answerTo(answer).includes(keep), `真实成果「${keep}」应保留，实际=${answerTo(answer)}`);
+    }
+  });
+});
+
+describe('Issue #34 补充：片段剥离不得产出半截词，兜底不得用硬编码串', () => {
+  test('「参与」的「与」不得被当虚词剥掉（主导参 / 主导全程参）', () => {
+    // 回归点：尾缀剥离 [的了和与及等其将已并]+$ 会吃掉「参与」的「与」
+    for (const exp of ['参与', '全程参与', '深度参与']) {
+      const r = mockChatCompletion({ experience: exp, jd: JD_OPS });
+      assert.equal(r.diff[0].original_segment, exp, `片段应保持完整，实际=${r.diff[0].original_segment}`);
+      // 注意不能用 includes('主导参') 判断——「主导参与」本身就包含「主导参」
+      assert.ok(r.rewritten.startsWith(`主导${exp}`), `不得产出半截词，实际=${r.rewritten}`);
+    }
+  });
+
+  test('片段整体是被动动词时，rewritten 不得退化成「这段经历」', () => {
+    for (const exp of ['负责', '协助', '参与']) {
+      const r = mockChatCompletion({ experience: exp, jd: JD_OPS });
+      assert.ok(!r.rewritten.includes('这段经历'), `不得回退到硬编码兜底串，实际=${r.rewritten}`);
+      // rewritten 与 diff 必须描述同一件事：原文片段的字面量仍应出现在改写文里
+      assert.ok(r.rewritten.includes(exp), `改写文应仍基于原片段「${exp}」，实际=${r.rewritten}`);
+    }
+  });
+});
+
+describe('JD 停用词补充：时间量词与邮箱/域名不得成为关键词', () => {
+  const JD_REAL =
+    '工作地点：北京海淀。日薪 200 元，本科及以上在读。岗位职责：1. 负责信息流投放账户搭建与日常优化；2. 跟踪投放数据并输出复盘报告。任职要求：1. 熟悉 Excel 与 SQL，对数据敏感；2. 每周到岗 4 天以上，实习 3 个月以上。投递方式：简历命名为「姓名+学校+实习」发送至 hr@example.com';
+
+  test('时长/时间量词（个月/天/小时）与页眉标题不得进入 keywords', () => {
+    const kws = mockChatCompletion({ experience: EXP, jd: JD_REAL }).keywords.map((k) => k.keyword);
+    for (const noise of ['个月', '每周', '工作地点']) {
+      assert.ok(!kws.includes(noise), `「${noise}」不是能力词，实际=${kws.join(',')}`);
+    }
+  });
+
+  test('邮箱被切分后漏出的 com / hr 不得成为关键词', () => {
+    const kws = mockChatCompletion({ experience: EXP, jd: JD_REAL }).keywords.map((k) => k.keyword.toLowerCase());
+    for (const junk of ['com', 'hr']) {
+      assert.ok(!kws.includes(junk), `邮箱片段「${junk}」不是能力词，实际=${kws.join(',')}`);
+    }
+  });
+
+  test('补停用词后真实能力词仍须保留', () => {
+    const kws = mockChatCompletion({ experience: EXP, jd: JD_REAL }).keywords.map((k) => k.keyword);
+    assert.ok(kws.includes('SQL') && kws.includes('Excel'), `能力词应保留，实际=${kws.join(',')}`);
+  });
+});
+
 describe('Issue #38 已回答但无数字时不得出现死胡同', () => {
   const Q = '这段经历带来的可量化结果是多少？';
 

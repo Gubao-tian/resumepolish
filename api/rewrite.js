@@ -126,6 +126,13 @@ const MIN_SEGMENT_LEN = 6;
  * @returns {string}
  */
 /**
+ * 以虚词字符结尾但本身是完整词的常见简历用词：尾缀剥离（见 mockChatCompletion）必须放过它们，
+ * 否则「参与」→「参」、「全程参与」→「全程参」这类半截词会进入改写文。
+ * 同类的还有「涉及」「尤其」「即将」「而已」「目的」「饱和」——剥完会剩「涉/尤/即/而/目/饱」。
+ */
+const SEGMENT_TAIL_KEEP_RE = /(?:参与|涉及|尤其|即将|而已|目的|饱和)$/;
+
+/**
  * 改写片段的长度上限（Issue #37）。
  * `rewritten = '主导' + 片段 + 尾缀`，须 ≤ Schema 的 300 字上限；
  * 输入校验只限制输入 ≤300，若片段不加预算，长输入会直接把 rewritten 顶爆 → 500。
@@ -182,6 +189,9 @@ const JD_STOPWORDS = new Set([
   '深圳', '杭州', '成都', '武汉', '南京', '西安', '厦门', '苏州', '远程', '线下', '现场',
   '本科', '硕士', '大专', '学历', '院校', '学校', '年级', '专业', '投递', '邮件', '格式',
   '命名', '标题', '简历', '附件', '备注', '联系方式', '电话', '微信',
+  // 时间量词：「实习 3 个月以上」「每周 4 小时」剥掉后缀后会漏出这类残片，
+  // 它们是时长约束而非岗位能力（Issue #33 残余项，Code Review 补充）
+  '个月', '小时', '天', '年', '周',
 ]);
 
 /** 英文停用词：英文/中英混排 JD 下，虚词会被当成关键词返回（Issue #35） */
@@ -196,6 +206,8 @@ const JD_STOPWORDS_EN = new Set([
   'here', 'these', 'those', 'some', 'like', 'just', 'get', 'got', 'make', 'made', 'need',
   'want', 'must', 'may', 'might', 'using', 'use', 'used', 'work', 'working', 'team', 'role',
   'looking', 'candidate', 'skill', 'skills', 'experience', 'ability', 'nice', 'great', 'strong',
+  // 邮箱/域名片段：「hr@example.com」被切分后会漏出 com / hr 这类噪声（英文能力词 ≥3 字母保留规则会放过它）
+  'com', 'cn', 'net', 'http', 'https', 'www', 'mail', 'hr',
 ]);
 
 /**
@@ -279,14 +291,18 @@ function extractJdKeywords(jd, rewritten) {
   /** @type {Array<{ kw: string, score: number, order: number }>} */
   const scored = [];
   for (const p of parts) {
+    // 邮箱整体跳过：「hr@example.com」被切分后会漏出 hr@example / com 这类噪声，
+    // 它们是联系方式而非能力词（含 @ 的片段一律不是关键词）
+    if (p.text.includes('@')) continue;
     // 剥离职位/方向类后缀：「内容运营实习」→「内容运营」；末尾「及以上/以上/以下」同理，
     // 使「本科及以上」→「本科」→ 命中学历类停用词被剔除
     let kw = p.text.replace(/(?:实习生|实习|岗|方向|相关|能力|经验|及以上|以上|以下)$/, '');
     // 剥首尾虚词：句子型 JD 被标点切碎后会产生「对投放效果负责」「负责信息流投放与」这类残片
     kw = stripFunctionChars(kw);
     if (kw.length < 2) continue;
-    // 章节标题不是能力关键词（「待补充（JD 中出现）：岗位职责」对用户毫无意义）
-    if (JD_SECTION_HEADINGS.has(kw)) continue;
+    // 章节标题不是能力关键词（「待补充（JD 中出现）：岗位职责」对用户毫无意义）；
+    // 页眉/页脚标题（工作地点/投递方式/公司介绍…）同理——它们只是结构标记，不是能力词
+    if (JD_SECTION_HEADINGS.has(kw) || NON_CAPABILITY_HEADINGS.includes(kw)) continue;
     // 纯英文片段过短（如从「A/B 测试」里切出的「AB」）无意义；≥3 字母的 ROI / SQL / CTR 保留
     if (/^[A-Za-z]{1,2}$/.test(kw)) continue;
     if (JD_STOPWORDS.has(kw)) continue;
@@ -327,12 +343,19 @@ const NUMBER_QUESTION = '这段经历带来的可量化结果是多少？';
 const NUMBER_FOLLOWUP_QUESTION = '能否补充更精确的数字（如具体人数、金额或百分比）？';
 
 /**
- * 日期 / 时间段样式，用于把日期从「可量化成果」中剔除（Issue #36）：
- * 2023.06、2023-09、2023年、2023、6月、6月9日 等。
+ * 日期 / 时间段样式，用于在抽取数字之前把日期**整段**从答案原文里挖掉（Issue #36）：
+ * 2023.06、2023-09、2023年6月、2023年、6月9日 等。
+ *
+ * 为什么必须在原文级挖、而不是抽完数字再逐个 token 过滤：数字抽取正则只认
+ * 「数字 + 可选小数 + 可选单位（万/个/人/次/篇/条/份/%）」，年/月/日 不在单位表里，
+ * 于是「2023年6月」会被切成 `2023` 与 `6` 两个 token，此时上下文已丢失，
+ * `6` 无法再被判定为日期（漏网）；反过来若放宽成「任意四位数字 = 年份」，
+ * 「曝光 2000」这类真实成果会被误删（误伤）。故先挖整段，再抽数字。
+ *
+ * 年份限定 19xx / 20xx 且**必须紧跟**年/月/日或日期分隔符，裸四位数字（2000）一律保留。
  */
-// 年份限定为 19xx / 20xx 形态：若放宽成任意 \d{4}，「阅读量 1200」会被误判为年份而丢掉真实成果
-const DATE_LIKE_RE =
-  /^(?:(?:19|20)\d{2}[.\-/年]\d{1,2}(?:[.\-/月]\d{1,2})?日?|(?:19|20)\d{2}年?|\d{1,2}月(?:\d{1,2}日?)?)$/;
+const DATE_IN_TEXT =
+  /(?:19|20)\d{2}\s*[.\-/年]\s*\d{1,2}(?:\s*[.\-/月]\s*\d{1,2})?\s*日?|\d{1,2}\s*月(?:\d{1,2}\s*日?)?|(?:19|20)\d{2}\s*年/g;
 
 /**
  * Mock 确定性响应（ADR-3）：由 experience / jd / followups 三者派生。
@@ -353,15 +376,24 @@ export function mockChatCompletion({ experience = '', jd = '', followups = [] } 
     .join('\n');
 
   const rawPiece = pickExperienceSegment(text);
-  const stripped = rawPiece.replace(/[的了和与及等其将已并]+$/, '').trim();
+  // 以虚词字符结尾、但本身是完整词的常见简历用词——尾缀剥离必须放过它们，
+  // 否则「参与」→「参」、「全程参与」→「全程参」这类半截词会进入改写文。
+  // （仅做长度 ≥2 的兜底不够：「全程参」长度为 3，照样被放行。）
+  const stripped = SEGMENT_TAIL_KEEP_RE.test(rawPiece)
+    ? rawPiece
+    : rawPiece.replace(/[的了和与及等其将已并]+$/, '').trim();
   // Issue #34：剥离后为空时**不得**回退到硬编码兜底串。
   // 「与、和」这类纯虚词输入的片段会被整个剥成空，若回退成 '这段经历'，
   // 该串并非 experience 的子串 → 输出校验第 3 道必然失败 → 500。
   // 改为保留未剥离的原文片段，确保 original_segment 始终是合法子串。
-  const slice = stripped.length > 0 ? stripped : rawPiece.trim();
+  // 剥离后只剩 1 个字时也要保留原片段：「参与」的「与」属于上述尾缀字符类，
+  // 剥完变「参」，改写文会输出「主导参」这种半截词（Issue #34 评审补充项）。
+  const slice = stripped.length >= 2 ? stripped : rawPiece.trim();
   const passive = /^(?:负责|参与|协助)\s*/;
   const hadPassive = passive.test(slice);
-  const core = slice.replace(passive, '').trim() || '这段经历';
+  // 被动前缀剥离后为空（如片段整体就是「负责」）时回退到 slice 本身，而不是硬编码兜底串——
+  // 否则会出现 rewritten 说「这段经历」、diff.original_segment 说「负责」的自相矛盾输出。
+  const core = slice.replace(passive, '').trim() || slice;
   // 数字或拉丁字母开头时补空格，避免「主导3 个渠道」这类粘连
   const lead = /^[\dA-Za-z]/.test(core) ? '主导 ' : '主导';
 
@@ -375,12 +407,11 @@ export function mockChatCompletion({ experience = '', jd = '', followups = [] } 
   // 结果只剩「6 篇」，而最有说服力的恰恰是阅读量与涨粉，观感上仍是「没完全听进去」。
   // 这些数字均来自 followupText（契约 §6 溯源白名单），全部引用不构成虚构。
   const suppliedNums = (
-    answersText.match(/\d+(?:\.\d+)?\s*(?:万元|亿元|万人|千人|万|个|人|次|篇|条|份|%|％)?/g) ?? []
-  )
-    // Issue #36：日期/时间段不是「成果」。PR #30 改为「取全部数字」后，
-    // 用户回答「从 2023.06 到 2023.09 涨粉 300 人」会把两个日期写成可量化成果，比修复前更糟。
-    .filter((s) => !DATE_LIKE_RE.test(s.trim()))
-    .slice(0, 4);
+    // Issue #36：先把日期整段挖掉再抽数字（见 DATE_IN_TEXT 注释）。
+    // PR #30 改为「取全部数字」后，用户回答「从 2023.06 到 2023.09 涨粉 300 人」
+    // 会把两个日期写成可量化成果，比修复前更糟。
+    answersText.replace(DATE_IN_TEXT, ' ').match(/\d+(?:\.\d+)?\s*(?:万元|亿元|万人|千人|万|个|人|次|篇|条|份|%|％)?/g) ?? []
+  ).slice(0, 4);
   const resultPart = hasNumber
     ? ''
     : suppliedNums.length > 0
