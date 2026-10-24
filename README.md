@@ -16,7 +16,7 @@
 ## 文档
 
 - 产品需求文档（PRD V1.0）：https://github.com/Gubao-tian/resume-optimizer-prd
-- 技术设计文档（ADR + 17 项 PM 裁决记录）：[`docs/tech-design.md`](docs/tech-design.md)
+- 技术设计文档（ADR + 20 项 PM 裁决记录）：[`docs/tech-design.md`](docs/tech-design.md)
 - API 契约 v1.2（冻结版，唯一权威）：[`docs/api-contract.md`](docs/api-contract.md)
 - LLM 选型记录：[`docs/llm-selection.md`](docs/llm-selection.md)
 
@@ -71,7 +71,7 @@ npm run dev             # http://localhost:5173
 | `npm run server` | 启动本地 API 服务器（8787） |
 | `npm start` | 同 `server`（生产单端口入口） |
 | `npm run build` | 构建前端至 `dist/` |
-| `npm test` | node:test 全量单测（104 项） |
+| `npm test` | node:test 全量单测（用例总数见「质量保障」一节，此处不重复写数字以免漂移） |
 | `node scripts/load-test.mjs` | Mock 层两层压测（P50/P95 + 同 IP 429 验证，T11） |
 
 ## 工作原理
@@ -96,7 +96,7 @@ Serverless handler（api/rewrite.js）
 
 ## 质量保障
 
-- **142 项 node:test 单测**：Prompt 构建、输入/输出七道校验、限流器、handler 集成（200/400/405/429/500/502/504/Mock 确定性）、上游请求体构造与 thinking 下发策略、`.env` 加载器（行内注释/不覆盖语义/缺失容错）、前端契约适配（错误码映射/超时/结构校验）、dev-server HTTP 冒烟；
+- **164 项 node:test 单测**（本文件是**用例总数的唯一来源**，其余位置一律引用本节、不重复写数字）：Prompt 构建、输入/输出七道校验（含「空」口径一致性）、限流器、handler 集成（200/400/405/429/500/502/504）、上游请求体构造与 thinking 下发策略、`.env` 加载器（行内注释/不覆盖语义/缺失容错）、Mock 响应行为（消费 JD 与追问补充、不新增事实、不切断数字）、前端契约适配（错误码映射/超时/结构校验）、dev-server HTTP 冒烟；
 - **CI 门禁**：每次 push / PR 自动执行 `npm test` + `npm run build`（GitHub Actions，ubuntu-latest + Node 20）；
 - **压测工具**：`scripts/load-test.mjs` 提供 Mock 层两层压测（不烧钱）；
 - **挂起项**：真实样本回归集（T10，需 User A/B 各 ≥3 条）随 M2 单独提交；真实 LLM 调用实测（T9，≥30 次 P95）待用户提供 API Key 后执行，选型推演见 `docs/llm-selection.md`。
@@ -116,12 +116,13 @@ Vercel（同域单项目，`vercel.json` 已配置 `api` 函数 `maxDuration=30s
 │   ├── numbers.js          #   数字归一化与抽取（溯源判定基础）
 │   ├── negative-words.js   #   负面词表 v1（25 词）
 │   ├── schema.js           #   响应结构 Schema
-│   └── ratelimit.js        #   滑动窗口限流器（30 次/小时/IP）
+│   ├── ratelimit.js        #   滑动窗口限流器（30 次/小时/IP）
+│   └── load-env.js         #   本地 .env 加载器（不覆盖已有环境变量）
 ├── src/                    # React 前端（Vite）
 │   ├── api.js              #   /api/rewrite 客户端（契约适配 + 30s 超时）
 │   ├── App.jsx             #   状态机与页面组装
 │   └── components/         #   ExperienceForm / ResultPanel
-├── tests/                  # node:test 单测（7 个文件，104 项）
+├── tests/                  # node:test 单测（11 个文件；用例总数见「质量保障」一节）
 ├── scripts/load-test.mjs   # Mock 层两层压测
 └── docs/                   # 技术设计 / API 契约 / LLM 选型
 ```
