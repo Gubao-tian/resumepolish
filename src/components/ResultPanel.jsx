@@ -38,6 +38,13 @@ function useCopyToClipboard() {
  * - questions：blocking 恒 false 不阻断；内联回答后「补充并重新生成」，
  *   仅回传已回答项，由 App 做多轮全量累积（契约 §2）。
  */
+/**
+ * 回答状态键：question 文本 + 索引复合。
+ * 纯 question 文本作键在服务端返回重复 question 时会使两个输入框共享同一状态
+ * （渲染有 key 兜底不串，但 state 会串、重新生成时重复回传）；复合键消除该边界。
+ */
+const answerKey = (q, i) => `${q.question}-${i}`;
+
 export default function ResultPanel({ result, onRegenerate, submitting }) {
   const [copied, copy] = useCopyToClipboard();
   const [answers, setAnswers] = useState({});
@@ -45,12 +52,12 @@ export default function ResultPanel({ result, onRegenerate, submitting }) {
   const { mock_mode: mockMode, rewritten, diff, keywords, questions } = result;
   const hitKeywords = keywords.filter((k) => k.status === 'hit');
   const missingKeywords = keywords.filter((k) => k.status === 'missing');
-  const answeredCount = questions.filter((q) => (answers[q.question] ?? '').trim() !== '').length;
+  const answeredCount = questions.filter((q, i) => (answers[answerKey(q, i)] ?? '').trim() !== '').length;
 
   const handleRegenerate = () => {
     const followups = questions
-      .filter((q) => (answers[q.question] ?? '').trim() !== '')
-      .map((q) => ({ question: q.question, answer: answers[q.question].trim() }));
+      .map((q, i) => ({ question: q.question, answer: (answers[answerKey(q, i)] ?? '').trim() }))
+      .filter((f) => f.answer !== '');
     onRegenerate(followups);
   };
 
@@ -158,9 +165,9 @@ export default function ResultPanel({ result, onRegenerate, submitting }) {
                     className="question-input"
                     rows={2}
                     placeholder="补充真实细节（如具体数字、方法、时长）"
-                    value={answers[q.question] ?? ''}
+                    value={answers[answerKey(q, i)] ?? ''}
                     onChange={(e) =>
-                      setAnswers((prev) => ({ ...prev, [q.question]: e.target.value }))
+                      setAnswers((prev) => ({ ...prev, [answerKey(q, i)]: e.target.value }))
                     }
                   />
                 </li>
