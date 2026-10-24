@@ -143,6 +143,19 @@ describe('handleRewriteRequest 限流（429）', () => {
     assert.equal(third.body.error.code, 'RATE_LIMITED');
     assert.ok(Number(third.headers['Retry-After']) >= 1);
   });
+
+  // Issue #24：限流按 IP 计数，而校园网/公司网等 NAT 出口下同一 IP 由多人共用，
+  // 用户可能一次都没提交过却看到「请求过于频繁」。文案必须说明真实原因，否则会被误认为产品故障。
+  test('429 文案说明额度按网络出口统计（避免 NAT 共用出口用户误判为故障）', async () => {
+    const limiter = createRateLimiter({ max: 1, windowMs: 60_000 });
+    const opts = { body: VALID_BODY, callLLM: fakeLLM(GOOD_OUTPUT), limiter, ip: '8.8.8.8' };
+    await handleRewriteRequest(opts);
+    const limited = await handleRewriteRequest(opts);
+    assert.equal(limited.status, 429);
+    assert.match(limited.body.error.message, /网络出口/, '应说明额度按网络出口统计');
+    assert.match(limited.body.error.message, /合并计算/, '应说明会与同网用户合并计算');
+    assert.match(limited.body.error.message, /\d+ 秒后再试/, '仍须给出可操作的等待时长');
+  });
 });
 
 describe('handleRewriteRequest 上游错误（502/504）', () => {

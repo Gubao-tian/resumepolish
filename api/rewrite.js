@@ -379,7 +379,17 @@ export async function handleRewriteRequest({
   }
   const rl = limiter.check(ip);
   if (!rl.allowed) {
-    return finish(errorResponse(429, 'RATE_LIMITED', `请求过于频繁，请 ${rl.retryAfterSec} 秒后再试`, undefined, { 'Retry-After': String(rl.retryAfterSec) }));
+    // Issue #24：限流按 IP 计数，而校园网/公司网等 NAT 出口下同一 IP 由多人共用，
+    // 用户可能一次都没提交过却看到「请求过于频繁」。文案需说明真实原因，避免被误认为产品故障。
+    return finish(
+      errorResponse(
+        429,
+        'RATE_LIMITED',
+        `请求过于频繁，请 ${rl.retryAfterSec} 秒后再试（额度按网络出口统计，校园网/公司网下会与同网用户合并计算）`,
+        undefined,
+        { 'Retry-After': String(rl.retryAfterSec) }
+      )
+    );
   }
   const v = validateInput(body);
   if (!v.ok) {
