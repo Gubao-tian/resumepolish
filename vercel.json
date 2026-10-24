@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/rewrite.js": {
+      "maxDuration": 30
+    }
+  },
+  "outputDirectory": "dist"
+}
