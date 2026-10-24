@@ -1,6 +1,6 @@
 # 简历润笔 ResumePolish V1.0 技术设计文档
 
-> 状态：**已评审定稿**（PM 汇总两位工程师《需求澄清与技术方案报告》，裁决全部开放项）
+> 状态：**已评审定稿 v1.1**（v1.0 经两位工程师澄清裁决；v1.1 修订 ADR-1 工具链决策与工作量口径，依据前端实现证据）
 > 关联：[PRD V1.0](https://github.com/Gubao-tian/resume-optimizer-prd) · [API 契约 v1.2](api-contract.md)
 > 日期：2026-10-24 ｜ 作者：产品经理（团队 lead）｜ 评审：研发工程师 1（后端/全栈）、研发工程师 2（前端/AI 应用）
 
@@ -35,37 +35,34 @@ V1.0 唯一核心功能（PRD §7）：**JD 对照的单条经历改写**。用�
                                       └──────────────────┘
 ```
 
-- 前端：纯静态 SPA（React 18 + Vite 5），`base: './'`，可托管于任意静态平台；
+- 前端：静态 SPA（React + Vite + TypeScript），`base` 由 `VITE_BASE` 注入（默认 `/`，适配 Vercel 同域部署）；
 - 后端：Vercel Serverless Function（Node 18+ 运行时，原生 `fetch`），仅作 LLM 代理，隐藏 API Key；
-- 共享核心：`shared/` 纯函数模块（Prompt 构建 / 输出校验 / 数字归一化 / 负面词表），前端不引用、服务端与单测共用，保证"契约即代码"；
+- 共享核心：`shared/` 纯函数模块（Prompt 构建 / 输出校验 / 数字归一化 / 负面词表），ESM JavaScript + JSDoc，服务端与 node:test 单测共用，保证"契约即代码"；
 - Mock 模式为一等公民：无 Key 可完整演示与测试，仅替换 `callLLM`，限流/校验/降级全链路真实。
 
 ## 3. 模块划分与职责
 
-| 路径 | 职责 | 作者 |
-|------|------|------|
-| `shared/negative-words.js` | 负面词表 v1（25 词） | E1 |
-| `shared/numbers.js` | 数字归一化与包含判断纯函数 | E1 |
-| `shared/schema.js` | 四要素 RESPONSE_SCHEMA + 结构校验 | E1 |
-| `shared/prompt.js` | `buildMessages({experience, jd, followups})` → `{system, user, temperature: 0.3}` | E1 |
-| `shared/validate.js` | `validateInput(body)` / `validateOutput(parsed, sources)`（七道校验 + 关键词降级） | E1 |
-| `shared/ratelimit.js` | 滑动窗口限流器（30 次/小时/IP） | E1 |
-| `api/rewrite.js` | Serverless handler（编排上述模块，Vercel 约定入口） | E1 |
-| `server/dev-server.js` | 本地单端口服务器（`/api/rewrite` + `dist/` 静态托管） | E1 |
-| `scripts/load-test.mjs` | 两层压测脚本（Mock 层 + 真实层） | E1 |
-| `src/*`（App/components/api.js/styles.css） | 单页工具前端 | E2 |
-| `tests/*` | node:test 单测与集成测试 | E1/E2 |
-| `.github/workflows/ci.yml` | push/PR 跑 `npm test` + `npm run build` | E1 |
-| `vercel.json` | 部署路由（静态 + `/api/*` → Function） | E1 |
+| 路径 | 语言/工具 | 职责 | 作者 |
+|------|-----------|------|------|
+| `shared/*.js` | JS + JSDoc | 负面词表 / 数字归一化 / Schema / Prompt 构建 / 输入输出校验 / 限流器（纯函数） | E1 |
+| `api/rewrite.js` | JS | Serverless handler（编排上述模块，Vercel 约定入口） | E1 |
+| `server/dev-server.js` | JS | 本地单端口服务器（`/api/rewrite` + `dist/` 静态托管） | E1 |
+| `scripts/load-test.mjs` | JS | 两层压测脚本（Mock 层 + 真实层） | E1 |
+| `src/**` | TS + React | 单页工具前端（types/api.ts 即契约的类型化） | E2 |
+| `src/mocks/**` | TS + MSW | 前端 API mock（开发/测试双端） | E2 |
+| `tests/*.test.js` | node:test | 服务端单测与集成测试 | E1 |
+| `src/**/*.test.ts(x)` | vitest + Testing Library | 前端单测/组件测试/集成测试 | E2 |
+| `.github/workflows/ci.yml` | — | push/PR 触发 `npm run test:all` + `npm run build` | E1 |
+| `vercel.json` | — | 部署路由（静态 + `/api/*` → Function） | E1 |
 
 ## 4. 关键设计决策（ADR）
 
-### ADR-1：V1.0 采用 ESM JavaScript + JSDoc，不做 TypeScript
+### ADR-1（v2，取代 v1）：前后端工具链分离——前端 TypeScript，服务端 ESM JavaScript
 
-- **背景**：工程师 1 建议 Node + TypeScript。
-- **决策**：V1.0 用零额外工具链的 ESM JS + JSDoc 类型标注；`node:test` 直跑测试，`vite` 直构前端，不引入 tsc/@types/tsx。
-- **理由**：契约文档（api-contract.md）+ JSDoc 已提供接口纪律；TS 的编译链路在 Serverless/测试/CI 三处增加配置面，V1.0 追求最小可信工具链。TypeScript 迁移列入 V1.1 技术债。
-- **后果**：接口变更靠评审与测试把关；`validateOutput` 的返回结构必须有充分单测覆盖（已列入测试清单）。
+- **背景**：v1 决策为全仓 ESM JS + JSDoc（最小工具链）。前端实现证据：`src/types/api.ts` 将契约固化为类型（请求/响应/错误码），配合 25 项 vitest + Testing Library + MSW 测试全绿，契约安全与测试资产价值超过工具链统一性收益。
+- **决策**：`src/**` 用 TypeScript（vitest 跑测试）；`shared/`、`api/`、`server/`、`scripts/`、`tests/` 保持 ESM JS + node:test。服务端 TS 化仍列 V1.1。
+- **后果**：CI 需跑两套测试运行器（`npm run test:all`）；`npm test` 必须 glob 限定 `tests/**/*.test.js`——实测 Node 22 默认发现会误抓 `src/**/*.test.ts` 并因 `vitest` 包不可用而失败（2026-10-24 实测）。
+- **修订纪律**：ADR 冻结后如需偏离，先提修订请求再实施（本次为证据驱动的事后追认，流程教训记入附录 B）。
 
 ### ADR-2：LLM 走 OpenAI 兼容协议，默认 DeepSeek，可替换
 
@@ -114,7 +111,7 @@ user   = 经历原文 + JD + followups 问答（如有）
 
 Schema → 理由非空 → 原文子串 → **数字溯源（一票否决）** → **负面词（一票否决）** → 关键词 hit 复核降级 → 专有名词分层（拉丁 token 脚本 + 中文 Prompt 硬规则 + 人工复核）。
 
-数字归一化规则（`shared/numbers.js`）：全半角统一、千分位去分隔、万/亿换算为数量级比较、中文/阿拉伯数字互转；"待补充"占位符白名单。
+数字归一化规则（`shared/numbers.js`）：全半角统一、千分位去分隔、万/亿换算为数量级比较、中文/阿拉伯数字互转（含"三千五"=3500 等口语简写）；"待补充"占位符白名单。
 
 ## 8. 限流与超时预算
 
@@ -134,13 +131,15 @@ Schema → 理由非空 → 原文子串 → **数字溯源（一票否决）** 
 | 2 | Q3 可测性 + E1/U3 样本量矛盾 | E1 与 U3 **共用同一回归集，规模 12 条**（12-15 区间下限，覆盖四类失败）；Q3 操作化：同输入 3 次运行结构 100% 合法 + 负面词 0 + 人工评分极差 ≤1 | E1 矛盾 2 |
 | 3 | Q2 虚构检测 vs 关键词边界 | 三点默认假设全部采纳：溯源拦截仅数字与狭义专有名词；hit=子串命中且非专有名词或原文已含；专有名词不得以 JD 形式进入文案 | E1 Q2 |
 | 4 | followups 契约 | 采纳：请求体 `followups:[{question,answer}]` 全量累积，进入溯源白名单 | E1 Q3 |
-| 5 | 埋点口径 | **V1.0 仅后端脱绒指标日志**（耗时/结构合法性/错误类型/token 用量，禁打印输入）；前端事件不落地；撤销前端最小三事件方案（省 0.25-0.5 人日） | E1 Q4 / E2 Q5 修订 |
-| 6 | 限流阈值与验证码 | 30 次/小时/IP（非 10 次/分钟，保护 R5 成本）；验证码移 V1.1；压测两层（Mock 无限次 + 真实 ≥30 次 P95） | E1 Q5 |
+| 5 | 埋点口径 | **V1.0 仅后端脱敏指标日志**（耗时/结构合法性/错误类型/token 用量，禁打印输入）；前端事件不落地；前端埋点桩整项剔除（T7 取消） | E1 Q4 / E2 Q5 修订 |
+| 6 | 限流阈值与验证码 | 30 次/小时/IP（否决 10 次/分钟过松口径）；验证码移 V1.1；压测两层（Mock 无限次 + 真实 ≥30 次 P95） | E1 Q5 |
 | 7 | 负面词表 | v1 共 25 词批准签发（附录 A）；扫描范围=`rewritten`+`diff[].rationale`；hit→missed 自动降级 | E1 Q6 |
-| 8 | 命名分歧 | 双工程师共识优先：`rewritten` 纯文本；其余字段名取显式命名（diff/keywords/questions），char_count 前端自算 | E1/E2 会商 |
-| 9 | 交互流 | 维持一次性往返、四要素同屏、反问不阻断（`blocking` 恒 false） | E2 Q1 |
-| 10 | 前端工作量 | 以自底向上 5.25 人日为基线；V1.0 冻结 T1/T2/T3/T5/T6/T7/T9=3.5 人日；T4 组件测试、T8 埋点移 V1.1；PRD §8.5 "2-3 人日"按 3.5 修订 | E2 8.5 |
-| 11 | 工具链 | ADR-1（ESM JS + JSDoc，TS 移 V1.1） | E1 D1 修订 |
+| 8 | 命名分歧 | 双工程师共识优先：`rewritten` 纯文本（不拆 action/method/result）；其余字段名取显式命名（diff/keywords/questions） | E1/E2 会商 |
+| 9 | 交互流 | 一次性往返、四要素同屏、反问不阻断（`blocking` 恒 false） | E2 Q1 |
+| 10 | 前端工作量 | 以自底向上口径为准；实际 T1-T9 合计约 6 人日（含 25 项测试，超出原冻结 3.5 的部分为质量资产，予以接纳）；PRD §8.5 前端按 **6 人日**修订，总量约 14.75 人日（≤15） | E2 实测 |
+| 11 | 工具链 | ADR-1 v2：前端 TS + vitest/MSW；服务端 JS + node:test；`npm test` glob 限定 `tests/**/*.test.js` | 实现证据 |
+| 12 | 超时「继续等待」按钮 | **不实现**：服务端总预算 ≤25s 早于前端 30s  abort，前端收到 504 时服务端已放弃，"继续等待"无适用窗口 | E2 Q2 |
+| 13 | 部署目标 | Vercel 同域（ADR-5）；GitHub Pages 不作演示（无 API 运行时）；`base` 由 VITE_BASE 注入保留静态托管灵活性 | E2 提问 |
 
 ## 10. 任务拆分与里程碑
 
@@ -148,39 +147,42 @@ Schema → 理由非空 → 原文子串 → **数字溯源（一票否决）** 
 |----|------|------|------|------|--------|
 | T0 | 契约冻结 + 技术设计文档 | PM | 0.5 | — | docs/*.md |
 | T1 | LLM 选型实测（主选+备选） | E1 | 0.5 | — | 选型报告（随 PR #3） |
-| T2 | shared/prompt.js | E1 | 0.5 | T0 | PR #2 |
-| T3 | shared/validate.js + numbers.js | E1 | 1.0 | T0 | PR #2 |
-| T4 | 单测：prompt / validate / numbers | E1 | 0.5 | T2,T3 | PR #2 |
-| T5 | shared/ratelimit.js + 单测 | E1 | 0.25 | T0 | PR #3 |
-| T6 | api/rewrite.js handler | E1 | 1.0 | T2,T3,T5 | PR #3 |
-| T7 | server/dev-server.js + 集成测试 | E1 | 0.75 | T6 | PR #3 |
-| T8 | Mock 模式 | E1 | 0.25 | T6 | PR #3 |
-| T9 | vercel.json + CI workflow | E1 | 0.25 | T7 | PR #3 |
-| T10 | 回归脚本 + 12 样本 | E1 | 0.5 | T8 | PR #3 |
-| T11 | 压测两层 | E1 | 0.5 | T9 | PR #3 |
+| T2-T4 | shared 核心 + 单测 + CI | E1 | 2.0 | T0 | PR #2 ✅ |
+| T5-T9 | 限流/handler/服务器/Mock/压测/部署配置 | E1 | 2.75 | T2-T4 | PR #3 |
+| T10 | 回归脚本 + 12 样本 | E1 | 0.5 | T9 | PR #3 |
 | T12 | Vercel 部署 + 联调 | E1 | 0.5 | 全部 | 演示地址 |
-| F1-F9 | 前端（form/api.js/ResultPanel/状态机/样式/构建验收/部署适配） | E2 | 3.5 | T0 | PR #4 |
+| F1-F9 | 前端（含 25 项测试） | E2 | 6.0 | T0 | PR #4 |
 | R1-R3 | 交叉 Review（PR #2/#3/#4） | E1/E2 | 1.5 | — | Review 记录 |
 
-后端合计 ≈ 6.75 人日（T1 不阻塞主线）+ 前端 3.5 + Review 1.5 + 文档 0.5 ≈ **12.25 人日**，落在 PRD §8.5 的 12-15 人日区间。
+后端合计 ≈ 6.75 人日（T1 不阻塞主线）+ 前端 6.0 + Review 1.5 + 文档 0.5 ≈ **14.75 人日**，落在 PRD §8.5 的 12-15 人日区间。
 
 ## 11. 测试策略
 
-**单元测试（node:test，零额外依赖）**
+**测试运行器分工（ADR-1 v2）**
+
+| 层 | 运行器 | 命令 | 覆盖 |
+|----|--------|------|------|
+| 服务端 | node:test | `npm test`（=`node --test tests/**/*.test.js`） | shared 纯函数、限流、API 集成（64 项） |
+| 前端 | vitest + Testing Library + MSW | `npm run test:web` | 接口层/组件/主流程（25 项） |
+| 全量 | — | `npm run test:all` | CI 门禁 |
+
+**服务端单测（node:test）**
 
 - `tests/prompt.test.js`：system 含负面词表/Schema/溯源规则；followups 正确拼接；temperature=0.3；
 - `tests/validate-input.test.js`：长度边界 299/300/301、1999/2000/2001、空/纯空白、控制字符与零宽字符、followups 结构；
-- `tests/validate-output.test.js`：Schema 违规（缺字段/类型错/理由空）、数字溯源（拦截"3 渠道"改"10 渠道"；放行"待补充"；放行 followups 补充；归一化 ３万/30,000/三万/30000 互通）、负面词命中、关键词降级、original_segment 非子串；
+- `tests/validate-output.test.js`：Schema 违规（缺字段/类型错/理由空）、数字溯源（拦截"3 渠道"改"10 渠道"；放行"待补充"；放行 followups 补充；归一化 ３万/30,000/三万/30000/三千五互通）、负面词命中、关键词降级、original_segment 非子串；
 - `tests/numbers.test.js`：归一化边界；
 - `tests/ratelimit.test.js`：窗口内放行/超限 429/Retry-After；
 - `tests/rewrite-api.test.js`：集成——Mock 模式 200 形状、mock_mode=true、400/429/500 路径。
+
+**前端测试（vitest，25 项）**：接口层 9（400/429/500/超时/非法结构/重试语义/followups 传递）；InputPanel 7；ResultPanel 6；App 主流程集成 3。MSW 覆盖 200/400/429/500/超时五路径。
 
 **回归与压测**
 
 - 回归集 12 条（§9 裁决 2）；门槛见契约 §7；
 - 压测两层：Mock 层无限次验证 P95 与限流触发；真实层 ≥30 次记录 P95（需 Key，手动执行）。
 
-**前端门禁（V1.0）**：`npm run build` 通过 + 手工验收（User A/B 验收标准清单）+ 联调（T12）。组件测试（vitest+jsdom）移 V1.1。
+**已知风险（E1 提出，回归集度量）**：拉丁 token 硬校验严格——SQL/Python 等出现在输出但原文没有时可能误判 INVALID_OUTPUT；若回归集误报率高，V1.0 增设常见技术名词白名单。
 
 ## 12. 风险与应对（映射 PRD 第十一章）
 
@@ -205,7 +207,7 @@ Schema → 理由非空 → 原文子串 → **数字溯源（一票否决）** 
 
 1. §9.3 U1「不低于三分之二」→「不低于 65%」（与 §10.1 北极星口径统一）；
 2. §12.2 发布门禁引用 U1 处同步为 65%；
-3. §8.5 前端工作量「2-3 人日」→「3.5 人日（自底向上口径，V1.0 冻结范围 T1/T2/T3/T5/T6/T7/T9）」；
+3. §8.5 前端工作量「2-3 人日」→「6 人日（自底向上口径，含 25 项前端测试）」；后端 6.75，总量 14.75；
 4. §8.5「回归集 ≥10 条」→「回归集 12 条（E1/U3 共用）」。
 
 ---
@@ -222,4 +224,6 @@ Schema → 理由非空 → 原文子串 → **数字溯源（一票否决）** 
 - 提交信息：`type(scope): 描述`（feat/fix/docs/test/chore/refactor）；
 - PR 模板：背景 / 内容 / 验证（命令+输出）/ 契约符合性 / 风险；
 - Review：交叉评审（后端 PR 由前端工程师审、前端 PR 由后端工程师审），Google 式清单（正确性/契约/测试/安全/可读性）；
-- CI：push/PR 触发 `npm test` + `npm run build`，红即禁合。
+- CI：push/PR 触发 `npm run test:all` + `npm run build`，红即禁合；
+- 常用命令：`npm run dev`（5173，/api 代理 8787）｜`npm run server`（8787）｜`npm run build`｜`npm start`（单端口演示）｜`npm test`（服务端）｜`npm run test:web`（前端）｜`npm run test:all`；
+- **ADR 修订纪律**：冻结决策如需偏离，先提修订请求并记录证据，再实施；事后追认需在本文档登记（ADR-1 v2 即首例，教训：派工指令应附带"偏离需先请示"的显式约束）。
