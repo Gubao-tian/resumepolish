@@ -73,6 +73,11 @@ describe('extractNumbers', () => {
     assert.deepEqual(extractNumbers(null), []);
     assert.deepEqual(extractNumbers(42), []);
   });
+
+  test('副词中的数字字符不误抽（十分/一定），锁定行为防过度抽取', () => {
+    assert.deepEqual(extractNumbers('效果十分理想，一定要量化成果'), []);
+    assert.deepEqual(extractNumbers('统一团队口径，一定可以提升'), []);
+  });
 });
 
 describe('textContainsNumber', () => {
