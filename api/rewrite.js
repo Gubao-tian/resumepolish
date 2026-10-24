@@ -253,9 +253,36 @@ function splitJdParts(jd) {
     last = m.index + m[0].length;
   }
   if (last < jd.length) out.push({ text: jd.slice(last), start: last });
-  return out
-    .map((p) => ({ text: p.text.trim(), start: p.start }))
-    .filter((p) => p.text.length >= 2 && p.text.length <= 8);
+  return out.map((p) => ({ text: p.text.trim(), start: p.start })).filter((p) => p.text.length >= 2);
+}
+
+/**
+ * 连续大写开头的英文单词是一个整体工具名（Issue #40）。
+ * 空格切分会把 `Final Cut` 拆成 `Final` + `Cut`、`Google Analytics` 拆成 `Google` + `Analytics`，
+ * 而工具名是简历上最值钱的一类词，被割裂会占掉两个关键词名额。
+ * 在提取阶段把这些相邻片段合并回一个片段。
+ * @param {Array<{ text: string, start: number }>} parts
+ * @returns {Array<{ text: string, start: number }>}
+ */
+function mergeCamelToolNames(parts) {
+  /** @type {Array<{ text: string, start: number }>} */
+  const out = [];
+  let i = 0;
+  while (i < parts.length) {
+    const cur = parts[i];
+    // 当前片段是「大写字母开头的英文词」且下一个也是 → 合并（Google Analytics / Final Cut）
+    if (/^[A-Z][a-z]*$/.test(cur.text) && i + 1 < parts.length) {
+      const next = parts[i + 1];
+      if (/^[A-Z][a-z]*$/.test(next.text) && next.start === cur.start + cur.text.length + 1) {
+        out.push({ text: `${cur.text} ${next.text}`, start: cur.start });
+        i += 2;
+        continue;
+      }
+    }
+    out.push(cur);
+    i += 1;
+  }
+  return out;
 }
 
 /**
@@ -285,7 +312,9 @@ function capabilityRanges(jd) {
 }
 
 function extractJdKeywords(jd, rewritten) {
-  const parts = splitJdParts(jd);
+  // 先合并英文工具名、再按长度过滤——长度上限若放在切分阶段，
+  // 会把 `Adobe Premiere`（14 字）在合并前就滤掉，工具名保护失效（Issue #40）
+  const parts = mergeCamelToolNames(splitJdParts(jd)).filter((p) => p.text.length <= 12);
   const ranges = capabilityRanges(jd);
   const seen = new Set();
   /** @type {Array<{ kw: string, score: number, order: number }>} */

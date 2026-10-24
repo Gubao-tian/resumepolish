@@ -403,3 +403,40 @@ describe('Issue #38 已回答但无数字时不得出现死胡同', () => {
     assert.equal(r.questions[0].question, Q);
   });
 });
+
+/**
+ * 以下用例来自 User A 二次验收 + 研发后续修复（Issue #40/#41 与 #34 输入层）。
+ */
+describe('Issue #40 英文工具名不被空格割裂', () => {
+  const JD_TOOL =
+    '岗位职责：1. 负责短视频剪辑，熟练使用 Final Cut 与 Adobe Premiere；2. 会用 Google Analytics 与 Microsoft Office';
+
+  test('Final Cut / Google Analytics 等工具名整体保留，不被割成 Final+Cut', () => {
+    const r = mockChatCompletion({ experience: '在校园公众号做过视频剪辑', jd: JD_TOOL });
+    const kws = r.keywords.map((k) => k.keyword);
+    assert.ok(kws.some((k) => /Final Cut|Adobe Premiere|Google Analytics|Microsoft Office/.test(k)),
+      `应含完整工具名，实际=${kws.join(',')}`);
+    assert.ok(!kws.some((k) => k === 'Final' || k === 'Cut' || k === 'Google' || k === 'Office'),
+      `不得出现被割裂的工具名碎片，实际=${kws.join(',')}`);
+  });
+});
+
+describe('Issue #41 能力章节候选不足时不拿噪声补位', () => {
+  test('能力章节只有 3 个候选时，宁可只给 3 个干净词', () => {
+    const JD_NOISE =
+      '新媒体运营实习生（base 北京海淀，日薪 150）。岗位职责：会用 Excel 与 SQL，数据敏感。投递方式：简历发 hr@example.com';
+    const r = mockChatCompletion({ experience: '在校园公众号写推文', jd: JD_NOISE });
+    const kws = r.keywords.map((k) => k.keyword);
+    assert.deepEqual(kws, ['Excel', 'SQL', '数据敏感'], `实际=${kws.join(',')}`);
+  });
+
+  test('词组型 JD（无章节标题）不退化，仍返回正确能力词', () => {
+    const r = mockChatCompletion({
+      experience: '负责信息流投放',
+      jd: '产品经理实习生：需求分析、原型设计、用户调研、数据驱动',
+    });
+    const kws = r.keywords.map((k) => k.keyword);
+    assert.ok(kws.includes('需求分析'), `实际=${kws.join(',')}`);
+    assert.ok(kws.includes('原型设计'));
+  });
+});
