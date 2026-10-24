@@ -62,16 +62,38 @@
 
 **备选：智谱 GLM-5.3-Flash**。理由：同为国产 OpenAI 兼容协议（`open.bigmodel.cn/api/paas/v4`）、JSON 输出官方支持、成本同量级；核心价值是**验证 ADR-2「协议可替换」设计**——切换仅需改 `LLM_BASE_URL`/`LLM_MODEL` 两个环境变量，代码零改动。GLM-4.7-Flash 免费档记录为演示环境零成本兜底选项。
 
-## 五、关键配置决策（代码已随本 PR 落实）
+## 五、关键配置决策（第 1/3/4 条已于 2026-10-24 二次核对官方后修订，见裁决 #18/#19）
 
-1. **默认模型 `deepseek-v4-flash`**：`api/rewrite.js` 原默认值 `deepseek-chat` 为已退役别名（2026-07-24 起不可用），已修正；`.env.example` 同步更新并加注说明。
+1. **默认模型 `deepseek-flash`（裁决 #18 修订）**：本节原记录「已修正为 `deepseek-v4-flash`」。2026-10-24 复核
+   `api-docs.deepseek.com/quick_start/pricing` 脚注，官方原文为：「Use **`deepseek-flash`** as the model name. The legacy
+   names **`deepseek-v4-flash`** ... are still accepted, but the corresponding models **have been retired**」——
+   即 `deepseek-v4-flash` 同样是官方标注的**退役 legacy name**（请求仍被接受，实际由 DeepSeek-V4.1-Flash-1017 承接
+   并按 Flash 计费），此前「修正退役别名」的方向修错了。默认值改为官方现行 ID **`deepseek-flash`**，`.env.example` 同步加注。
 2. **`response_format: {type:'json_object'}` 已启用**：提升 JSON 首 Try 合法率（标准 #2），两家候选均官方支持；Markdown 包裹容忍 + 一次结构重试作为纵深防御保留。
-3. **思考模式保持默认开启**：V4-Flash 默认 thinking on。V1.0 质量优先（中文改写场景思考链有增益），15s 首调预算内可容纳；若 T9 实测 P95 超预算，降级开关为请求体 `extra_body.thinking.type=disabled`（记录在案，未启用）。
-4. **temperature 维持 0.3**（契约 §5 冻结值，`shared/prompt.js` 统一出口）。
+3. **思考模式由「保持默认开启」改为「显式关闭」（裁决 #19 修订）**：原决策是「V4-Flash 默认 thinking on，质量优先，
+   15s 首调预算内可容纳，降级开关记录在案但不启用」。复核 `api-docs.deepseek.com/guides/thinking_mode` 后发现一条
+   此前未知的事实：**thinking 模式下 `temperature` 无效**——「for compatibility ... setting these parameters will not
+   trigger an error but will also have no effect」。这与本节原第 4 条「temperature 维持 0.3（契约 §5 冻结值）」直接冲突：
+   **契约冻结的确定性控制手段实际处于静默失效状态**，而代码无任何报错提示。
+   又因 V1.0 的输出质量由服务端七道校验兜底（而非模型推理深度），且本场景为单条经历改写（轻任务），
+   故改为显式下发 `thinking: {type:'disabled'}`：使 temperature=0.3 真正生效，同时降低延迟与 token 成本
+   （thinking=high 会显著增加输出 token 与耗时，直接威胁 15s 首调预算与单次成本红线）。
+   该字段**仅对 DeepSeek 端点下发**（非 DeepSeek 端点返回 null 不携带），以保持 ADR-2 协议可替换性；
+   保留 `LLM_THINKING=enabled` 开关供 T9 做 A/B 实测对比。
+4. **temperature 维持 0.3**（契约 §5 冻结值，**实际生效性经 #19 修订后恢复**）：此前因 thinking 默认开启，
+   该冻结值被上游静默忽略；关闭 thinking 后重新成为有效的确定性控制手段。
 
 ## 六、Mock 层已验证的结论（T9 挂起期间的能力边界）
 
-真实调用层是唯一未实测变量；其余链路已由 Mock 模式（MOCK=1 或缺 Key 自动进入，`mock_mode:true`）全链路实测：
+**未实测变量已收窄为「真实上游的延迟、成本与输出质量」**：2026-10-24 以本地 OpenAI 兼容假上游
+（`FAKE_MODE` 覆盖 ok / 5xx / 401 / 非 JSON 文本 / 延迟 20s / 数字放大 / 空 content 共七种行为）
+对 `callLLM` 的**真实分支**做了端到端验证，**7/7 通过**——请求体构造、超时预算（首调严格 15s）、
+错误映射（5xx 与 401 → 502 `UPSTREAM_ERROR`；结构非法 → 重试一次后 500 `INVALID_OUTPUT`；
+上游超时 → 504 `UPSTREAM_TIMEOUT`）、数字溯源一票否决在真实分支同样生效、token 用量正常回传。
+在此之前该分支**仅有 Mock 覆盖，从未被端到端执行过**。
+因此仍需真实 Key 才能测量的只剩：真实延迟 P50/P95、真实 token 成本、真实模型的输出质量与 JSON 首 Try 合法率。
+
+其余链路已由 Mock 模式（MOCK=1 或缺 Key 自动进入，`mock_mode:true`）全链路实测：
 
 - 限流：同 IP 35 连发 → 30×200 + 5×429（Retry-After 正确），窗口滑动恢复符合预期；
 - 七道输出校验：64 项单测覆盖（Schema/理由非空/原文子串/数字溯源一票否决/负面词一票否决/关键词降级/拉丁 token 分层）；
@@ -82,6 +104,9 @@
 ## 七、T9 实测计划（用户提供 Key 后执行）
 
 1. 样本：回归集 12 条（E1/U3 共用集合）× 每家 3 轮；另做 ≥30 次连续调用测 P95；
-2. 参数与线上一致：temperature=0.3、response_format=json_object、默认思考模式；
-3. 记录：首 token 延迟、总延迟 P50/P95、prompt/completion token 用量、单次成本、JSON 首 Try 合法率、七道校验通过率（复用 `shared/validate.js`）、峰谷计费口径；
+2. 参数与线上一致：temperature=0.3、response_format=json_object、thinking=disabled；
+   另跑一组 `LLM_THINKING=enabled`（≥30 次）做 A/B 对比，用于复核裁决 #19 关于
+   「关闭 thinking 不损失输出质量」的判断（该判断目前只有官方参数语义支撑，尚无实测证据）；
+3. 记录：首 token 延迟、总延迟 P50/P95、prompt/completion token 用量、单次成本、JSON 首 Try 合法率、
+   七道校验通过率（复用 `shared/validate.js`）、峰谷计费口径、thinking on/off 两组的质量与延迟对比；
 4. 判定：达门槛 #2/#3 → 维持主选；未达 → 按 ADR-2 仅改环境变量切备选并重跑本报告，代码零改动。

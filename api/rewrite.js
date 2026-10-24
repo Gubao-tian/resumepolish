@@ -70,9 +70,49 @@ function mockChatCompletion({ experience }) {
   };
 }
 
+/** 默认模型：DeepSeek 现行主选（api-docs.deepseek.com 2026-10-24 核对） */
+const DEFAULT_MODEL = 'deepseek-flash';
+
+/**
+ * DeepSeek 专有 thinking 参数；非 DeepSeek 端点返回 null（ADR-2 可替换性：不引入未知字段）。
+ *
+ * 依据（api-docs.deepseek.com/guides/thinking_mode，2026-10-24 核对）：
+ * - DeepSeek 默认 thinking=enabled 且 effort=high；
+ * - **thinking 模式下 temperature 无效**——为兼容性不报错，但完全无效果。
+ * 契约 §5 冻结 temperature=0.3 作为确定性控制手段；若 thinking 保持开启，该冻结值静默失效，
+ * 与 docs/llm-selection.md 原「temperature 维持 0.3」记录事实冲突。
+ * V1.0 场景为单条经历改写（轻任务），质量由服务端七道校验兜底而非模型推理深度，
+ * 故显式关闭 thinking：使 temperature 真正生效，同时降低延迟与 token 成本。
+ * T9 实测可用 LLM_THINKING=enabled 做 A/B 对比（输出质量与 P95 延迟），见 docs/llm-selection.md 裁决 #19。
+ * @param {string} base
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {{ type: 'enabled'|'disabled' } | null}
+ */
+export function thinkingParam(base, env = process.env) {
+  if (!/deepseek/i.test(base)) return null;
+  return { type: String(env.LLM_THINKING || 'disabled').toLowerCase() === 'enabled' ? 'enabled' : 'disabled' };
+}
+
+/**
+ * 上游请求体构造（纯函数，便于单测；ADR-4 薄 handler 下从 callLLM 抽出）。
+ * @param {{ base?: string, messages: Array<{role:string,content:string}>, env?: NodeJS.ProcessEnv }} opts
+ */
+export function buildUpstreamRequest({ base = '', messages, env = process.env } = {}) {
+  const body = {
+    model: env.LLM_MODEL || DEFAULT_MODEL,
+    messages,
+    temperature: 0.3, // 契约 §5 冻结值；DeepSeek 端仅在 thinking=disabled 时生效（见 thinkingParam 注释）
+    response_format: { type: 'json_object' }, // 提升 JSON 首 Try 合法率（选型标准 #2；DeepSeek/GLM 官方均支持）
+  };
+  const thinking = thinkingParam(base, env);
+  if (thinking) body.thinking = thinking;
+  return body;
+}
+
 /**
  * LLM 调用（OpenAI 兼容协议，ADR-2）。
- * 默认模型 deepseek-v4-flash（T1 桌面推演主选；旧别名 deepseek-chat 已于 2026-07-24 退役）。
+ * 默认模型 deepseek-flash（DeepSeek 现行 ID；旧名 deepseek-v4-flash 已被官方标注为退役 legacy name，
+ * 请求仍被接受但由 DeepSeek-V4.1-Flash-1017 承接，故不再作为默认值，见 docs/llm-selection.md 裁决 #18）。
  * 返回 { content, usage }；usage 仅用于脱敏指标日志（token 用量），Mock 模式为 null。
  * 错误约定：AbortError → code=UPSTREAM_TIMEOUT；非 2xx/网络异常 → code=UPSTREAM_ERROR。
  * @param {Array<{role:string,content:string}>} messages
@@ -91,12 +131,7 @@ async function callLLM(messages, timeoutMs, ctx) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.LLM_API_KEY}`,
       },
-      body: JSON.stringify({
-        model: process.env.LLM_MODEL || 'deepseek-v4-flash',
-        messages,
-        temperature: 0.3,
-        response_format: { type: 'json_object' }, // 提升 JSON 首 Try 合法率（选型标准 #2；DeepSeek/GLM 均支持）
-      }),
+      body: JSON.stringify(buildUpstreamRequest({ base, messages })),
       signal: controller.signal,
     });
     if (!resp.ok) {

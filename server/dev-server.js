@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { handleRewriteRequest } from '../api/rewrite.js';
+import { loadEnv } from '../shared/load-env.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -94,7 +95,24 @@ export const server = createServer(async (req, res) => {
 
 // 仅当作为主入口运行时监听端口（被测试 import 时不启动）
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // 加载 .env：README/.env.example 指导用户把 LLM_API_KEY 写入 .env，
+  // 若此处不加载，用户填了 Key 仍会静默进入 Mock 模式。
+  // 安全：仅回显键名与数量，绝不打印任何值（隐私红线）。
+  const env = await loadEnv(join(ROOT, '.env'));
+  if (env.missing) {
+    console.log('[dev-server] 未检测到 .env（可复制 .env.example 后填写），当前为 Mock 演示模式');
+  } else {
+    console.log(
+      `[dev-server] 已加载 .env：${env.loaded.length} 项生效${env.skipped.length ? `，${env.skipped.length} 项因环境变量已存在而跳过（${env.skipped.join(', ')}）` : ''}`
+    );
+    if (!env.loaded.includes('LLM_API_KEY') && !env.skipped.includes('LLM_API_KEY')) {
+      console.log('[dev-server] 提示：.env 中未设置 LLM_API_KEY，将进入 Mock 演示模式');
+    }
+  }
   server.listen(PORT, '127.0.0.1', () => {
-    console.log(`dev-server listening on http://127.0.0.1:${PORT}（/api/rewrite + dist/ 静态托管）`);
+    const real = Boolean(process.env.LLM_API_KEY) && process.env.MOCK !== '1';
+    console.log(
+      `dev-server listening on http://127.0.0.1:${PORT}（/api/rewrite + dist/ 静态托管）模式=${real ? '真实 LLM' : 'Mock 演示'}`
+    );
   });
 }
