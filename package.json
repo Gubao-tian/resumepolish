@@ -1,7 +1,7 @@
 {
   "name": "resumepolish",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "简历润笔 ResumePolish — JD 对照的单条经历改写工具（V1.0）：零虚构、无 AI 味、不存数据",
   "license": "MIT",
