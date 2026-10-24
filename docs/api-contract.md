@@ -33,7 +33,7 @@ Content-Type: application/json
 | `jd` | string | 是 | 1-2000 字符 | 目标岗位 JD 纯文本 |
 | `followups` | array | 否 | `[{question, answer}]` | 对上一轮 `questions` 的回答；重新生成时全量累积回传 |
 
-字符计数含标点；sanitize=去控制字符与零宽字符、保留正常 Unicode。
+字符计数含标点，按 UTF-16 码元计（等价于 `String.length`，emoji 记 2）；sanitize=去控制字符与零宽字符、保留正常 Unicode。
 空/超限/仅空白 → `400 INVALID_INPUT`（`detail.field` 指明字段）。
 
 ## 3. 成功响应（200）
