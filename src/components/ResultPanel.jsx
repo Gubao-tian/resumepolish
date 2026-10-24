@@ -92,7 +92,7 @@ export default function ResultPanel({ result, onRegenerate, submitting }) {
             </thead>
             <tbody>
               {diff.map((item, i) => (
-                <tr key={i} data-testid="diff-row">
+                <tr key={`${item.original_segment}-${i}`} data-testid="diff-row">
                   <td className="diff-original">{item.original_segment}</td>
                   <td className="diff-revised">{item.revised_segment}</td>
                   <td className="diff-reason">{item.rationale}</td>
@@ -109,8 +109,8 @@ export default function ResultPanel({ result, onRegenerate, submitting }) {
           <h4>已保留（JD 关键词，已体现在改写中）</h4>
           <div className="chips" data-testid="keywords-hit">
             {hitKeywords.length === 0 && <span className="empty-state">暂无</span>}
-            {hitKeywords.map((k) => (
-              <span key={k.keyword} className="chip chip-hit">
+            {hitKeywords.map((k, i) => (
+              <span key={`${k.keyword}-${i}`} className="chip chip-hit">
                 {k.keyword}
               </span>
             ))}
@@ -120,16 +120,16 @@ export default function ResultPanel({ result, onRegenerate, submitting }) {
           <h4>待补充（JD 中出现，但你的原文未覆盖）</h4>
           <div className="chips" data-testid="keywords-missing">
             {missingKeywords.length === 0 && <span className="empty-state">暂无</span>}
-            {missingKeywords.map((k) => (
-              <span key={k.keyword} className="chip chip-missing" title={k.source_hint}>
+            {missingKeywords.map((k, i) => (
+              <span key={`${k.keyword}-${i}`} className="chip chip-missing" title={k.source_hint}>
                 {k.keyword}
               </span>
             ))}
           </div>
           {missingKeywords.length > 0 && (
             <ul className="keyword-hints">
-              {missingKeywords.map((k) => (
-                <li key={k.keyword}>
+              {missingKeywords.map((k, i) => (
+                <li key={`${k.keyword}-${i}`}>
                   <strong>{k.keyword}</strong>：可从「{k.source_hint}」挖掘，确认具备后自行添加——产品不会替你写入
                 </li>
               ))}
@@ -150,8 +150,8 @@ export default function ResultPanel({ result, onRegenerate, submitting }) {
               以下信息缺失，补充后改写会更扎实。回答不了可以跳过——产品不会替你编造。
             </p>
             <ul className="question-list">
-              {questions.map((q) => (
-                <li key={q.question} className="question-item" data-testid="question-item">
+              {questions.map((q, i) => (
+                <li key={`${q.question}-${i}`} className="question-item" data-testid="question-item">
                   <p className="question-text">{q.question}</p>
                   {q.reason && <p className="question-reason">为什么问：{q.reason}</p>}
                   <textarea
