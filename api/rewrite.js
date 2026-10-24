@@ -9,7 +9,7 @@
  * 限流/校验/降级全链路保持真实。
  */
 
-import { buildMessages } from '../shared/prompt.js';
+import { buildMessages, PLACEHOLDER_TOKEN } from '../shared/prompt.js';
 import { validateInput, validateOutput } from '../shared/validate.js';
 import { createRateLimiter } from '../shared/ratelimit.js';
 
@@ -33,40 +33,202 @@ function clientIp(req) {
 }
 
 /**
- * Mock 确定性响应（ADR-3）：模板 + 原文片段派生。
- * 同输入同输出；数字/拉丁 token 全部来自原文，保证可通过七道校验。
- * @param {{ experience: string }} ctx
+ * 数字段区间（含小数点），用于避免把小数点当成句子分隔符。
+ * 例：「预算 3.2 万元」→ "3.2" 占 [3, 6)，其间的 "." 不得作为切分点。
+ * @param {string} text
+ * @returns {Array<[number, number]>} 半开区间 [start, end)
  */
-function mockChatCompletion({ experience }) {
-  const text = experience.trim();
-  const cut = text.search(/[，。、；,.;!?！？]/);
-  // 截断优先级：首个标点处（语义完整）> 短句整句（≤24 字，避免硬切半词）> 12 字片段。
-  // 演示输出若把词切断（如「渠道的日」「运营与维」）会被误认为缺陷，故语义完整优先。
-  const raw =
-    cut > 0 && cut <= 20 ? text.slice(0, cut) : text.length <= 24 ? text : text.slice(0, 12);
-  const slice = raw.replace(/[的了和与及等其将已并]+$/, '').trim() || '这段经历';
+function numberSpans(text) {
+  /** @type {Array<[number, number]>} */
+  const spans = [];
+  const re = /\d+(?:\.\d+)?/g;
+  let m;
+  while ((m = re.exec(text)) !== null) spans.push([m.index, m.index + m[0].length]);
+  return spans;
+}
+
+/** @param {Array<[number, number]>} spans @param {number} i */
+function inSpans(spans, i) {
+  return spans.some(([s, e]) => i >= s && i < e);
+}
+
+/** 句子分隔符候选（英文句点亦在内，但会由 inSpans 排除数字内部的小数点） */
+const SEGMENT_PUNCT = /[，。、；：！？,.;:!?]/;
+
+/**
+ * 按标点切成子句，各子句记录其在原文中的 [start, end) 位置。
+ * 位于数字内部的标点（如 3.2 的 "."）不作为切分点。
+ * @param {string} text
+ * @returns {Array<{ text: string, start: number, end: number }>}
+ */
+function splitClauses(text) {
+  const spans = numberSpans(text);
+  /** @type {Array<{ text: string, start: number, end: number }>} */
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (!SEGMENT_PUNCT.test(text[i])) continue;
+    if (inSpans(spans, i)) continue;
+    if (i > start) out.push({ text: text.slice(start, i), start, end: i });
+    start = i + 1;
+  }
+  if (start < text.length) out.push({ text: text.slice(start), start, end: text.length });
+  return out.filter((c) => c.text.trim().length > 0);
+}
+
+/** 子句作为改写片段时的最短长度：短于此会丢掉核心信息（如「课程项目」只有 4 字） */
+const MIN_SEGMENT_LEN = 6;
+
+/**
+ * 选取用于改写的原文片段（Issue #20）。三条硬约束：
+ *   1. **语义完整**——按标点断句，避免切出半截词（如「渠道的日」「运营与维」）；
+ *   2. **绝不切断数字**——从数字中间切断会让改写文数字与原文对不上，触发数字溯源一票否决
+ *      （「预算 3.2 万元」曾被切成「预算 3」→ 3 ≠ 3.2 → 500）；
+ *   3. **不丢弃量化成果**——原句的阿拉伯数字若落在后续子句，应优先保留该子句，
+ *      否则用户明明写了 ROI 1.8，改写结果里却一个数都没有（正是 User B「有数据不知怎么用」的痛点）。
+ *   拼接相邻子句时一律取**原文连续切片**，以保证 result 仍是 experience 的逐字子串（契约 §6 第 3 道）。
+ * @param {string} text
+ * @returns {string}
+ */
+function pickExperienceSegment(text) {
+  const clauses = splitClauses(text);
+  // 1) 优先保留带阿拉伯数字的子句，并尽量拼上紧邻的前一子句以保留「动作 + 结果」
+  const idx = clauses.findIndex((c) => c.text.length >= MIN_SEGMENT_LEN && /\d/.test(c.text));
+  if (idx >= 0) {
+    if (idx > 0) {
+      const merged = text.slice(clauses[idx - 1].start, clauses[idx].end); // 原文连续片段
+      if (merged.trim().length > 0 && merged.length <= 24) return merged;
+    }
+    return clauses[idx].text;
+  }
+  // 2) 第一个长度适中的子句，避免「课程项目」这类过短片段
+  const suitable = clauses.find((c) => c.text.length >= MIN_SEGMENT_LEN && c.text.length <= 20);
+  if (suitable) return suitable.text;
+  if (clauses[0]) return clauses[0].text;
+  // 3) 无标点的长句：≤24 字用全文，否则硬切并回避开数字内部
+  if (text.length <= 24) return text;
+  const spans = numberSpans(text);
+  let cut = 12;
+  while (cut > 1 && inSpans(spans, cut)) cut -= 1;
+  return text.slice(0, cut);
+}
+
+/** JD 切分后的通用词：这些不是「岗位能力关键词」，不应进入 keywords */
+const JD_STOPWORDS = new Set([
+  '实习', '实习生', '岗位', '职位', '职责', '要求', '负责', '协助', '参与', '具备', '优先',
+  '经验', '能力', '相关', '以上', '以下', '学历', '本科', '硕士', '专业', '我们', '公司',
+  '团队', '工作', '进行', '能够', '可以', '以及', '其他', '熟悉', '熟练', '良好', '优秀',
+  '较强', '热爱', '开朗', '积极', '主动', '沟通', '协作', '精神', '意识', '加分', '待遇',
+  '薪资', '福利', 'base', '地点', '城市', '投递', '简历', '邮件', '标题', '注明',
+  // 职位名与头衔：这些不是「岗位能力关键词」，JD 首句常以「产品经理实习生：」开头，
+  // 若不剔除会把职位名当成关键词返回（对岗位对照无意义）
+  '产品经理实习生', '产品经理', '运营实习生', '产品实习生', '数据分析师', '运营专员',
+  '产品助理', '运营助理', '算法工程师', '前端工程师', '后端工程师', '测试工程师',
+  '实习生', '专员', '助理', '经理', '主管', '总监', '校招', '社招', '全职', '兼职',
+]);
+
+/**
+ * 从 JD 提取候选关键词（Issue #19：此前硬编码「内容生产/数据分析」，与传入的 JD 完全无关）。
+ * status 按改写文是否实际包含来判定——服务端另有 hit→missing 自动降级，
+ * 此处判定只是让演示数据自洽，不作为最终值（最终值由 validateOutput 重算）。
+ * @param {string} jd
+ * @param {string} rewritten
+ */
+function extractJdKeywords(jd, rewritten) {
+  const parts = jd
+    .split(/[，。、；：！？,.;:!?\s/（）()【】[\]<>《》“”"'\-—+]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 2 && s.length <= 8);
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    if (out.length >= 5) break;
+    // 剥离职位/方向类后缀：「内容运营实习」→「内容运营」。
+    // 与其穷举职位名，不如统一剥后缀——剥离后仍是 JD 的子串，不改变溯源口径。
+    const kw = p.replace(/(?:实习生|实习|岗|方向|相关|能力|经验)$/, '');
+    if (kw.length < 2 || JD_STOPWORDS.has(kw) || seen.has(kw) || !/[\u4e00-\u9fa5A-Za-z]/.test(kw)) continue;
+    seen.add(kw);
+    const hit = rewritten.includes(kw);
+    out.push({
+      keyword: kw,
+      status: hit ? 'hit' : 'missing',
+      source_hint: hit ? '已在改写文中体现' : '可从你与该词相关的经历中挖掘后补充',
+    });
+  }
+  if (out.length === 0 && jd.trim().length > 0) {
+    // JD 切不出候选（如纯英文长短语）时至少给一项，避免 keywords 为空导致演示效果缺失
+    const fallback = jd.trim().slice(0, 6);
+    const hit = rewritten.includes(fallback);
+    out.push({
+      keyword: fallback,
+      status: hit ? 'hit' : 'missing',
+      source_hint: hit ? '已在改写文中体现' : '可从你与该词相关的经历中挖掘后补充',
+    });
+  }
+  return out;
+}
+
+/** 数字追问的固定文案：保持稳定，使「已回答则不重复问」的判定不因文案变化而失效 */
+const NUMBER_QUESTION = '这段经历带来的可量化结果是多少？';
+
+/**
+ * Mock 确定性响应（ADR-3）：由 experience / jd / followups 三者派生。
+ *
+ * 设计原则（Issue #19/#20/#23）：Mock 必须真实消费三个输入，否则演示路径上的
+ * FR-5（JD 对照）与 FR-6（追问累积）形同失效，用户会认为「产品没听进去我说话」。
+ * 同时**绝不新增原文与补充之外的事实**——此前硬编码尾缀「搭建选题模板」会让 Mock
+ * 自己违反「挖而不编」的红线（对投放岗用户而言，他从未搭过选题模板）。
+ *
+ * 同输入同输出；数字只来自 experience 或 followupText（契约 §6 溯源白名单），保证通过七道校验。
+ * @param {{ experience?: string, jd?: string, followups?: Array<{question?:string,answer?:string}> }} ctx
+ */
+export function mockChatCompletion({ experience = '', jd = '', followups = [] } = {}) {
+  const text = String(experience).trim();
+  const jdText = String(jd).trim();
+  const answersText = followups
+    .map((f) => `${f?.question ?? ''}${f?.answer ?? ''}`)
+    .join('\n');
+
+  const slice = pickExperienceSegment(text).replace(/[的了和与及等其将已并]+$/, '').trim() || '这段经历';
   const passive = /^(?:负责|参与|协助)\s*/;
   const hadPassive = passive.test(slice);
   const core = slice.replace(passive, '').trim() || '这段经历';
   // 数字或拉丁字母开头时补空格，避免「主导3 个渠道」这类粘连
   const lead = /^[\dA-Za-z]/.test(core) ? '主导 ' : '主导';
+
+  // 数字来源判定（基于**片段**而非全文，否则判定与输出不一致：
+  // 全文含数字但片段不含时，改写结果里会一个数都没有）。
+  // 只认阿拉伯数字：中文数字（如「一场活动」的「一」）不算「可量化成果」，
+  // 否则用户写「来了大概几百人」也会被判定为已有数字而不再追问。
+  const hasNumber = /\d/.test(slice);
+  const supplied = answersText.match(/\d+(?:\.\d+)?\s*(?:万元|亿元|万人|千人|万|个|人|次|篇|条|份|%|％)?/);
+  const resultPart = hasNumber
+    ? ''
+    : supplied
+      ? `，可量化成果为 ${supplied[0]}`
+      : `，可量化成果为${PLACEHOLDER_TOKEN}`;
+
+  const rewritten = `${lead}${core}${resultPart}`;
+  const asked = new Set(followups.map((f) => String(f?.question ?? '')));
+  const questions = [];
+  if (!hasNumber && !supplied && !asked.has(NUMBER_QUESTION)) {
+    questions.push({ question: NUMBER_QUESTION, blocking: false, reason: '缺少数字成果，影响面试说服力' });
+  }
+
   return {
     mock_mode: true,
-    rewritten: `${lead}${core}，搭建选题模板，形成可复用的内容生产流程`,
+    rewritten,
     diff: [
       {
         original_segment: slice,
-        revised_segment: `${lead}${core}，搭建选题模板`,
+        revised_segment: rewritten,
         rationale: hadPassive
-          ? '「负责」类表述改为「主导」突出 ownership，并补充可复用的方法'
-          : '补充可复用的方法与动作主导性，让成果更可验证',
+          ? '「负责」类表述改为「主导」，突出 ownership 与可验证的产出'
+          : '强化动作主导性与可验证的产出维度，让成果更经得起追问',
       },
     ],
-    keywords: [
-      { keyword: '内容生产', status: 'hit', source_hint: '可从原文运营职责对应' },
-      { keyword: '数据分析', status: 'missing', source_hint: '可从数据类经历挖掘后自行补充' },
-    ],
-    questions: [{ question: '这段经历带来的可量化结果是多少？', blocking: false, reason: '缺少数字成果，影响面试说服力' }],
+    keywords: extractJdKeywords(jdText, rewritten),
+    questions,
   };
 }
 
@@ -117,7 +279,8 @@ export function buildUpstreamRequest({ base = '', messages, env = process.env } 
  * 错误约定：AbortError → code=UPSTREAM_TIMEOUT；非 2xx/网络异常 → code=UPSTREAM_ERROR。
  * @param {Array<{role:string,content:string}>} messages
  * @param {number} timeoutMs
- * @param {{ experience: string }} ctx
+ * @param {{ experience?: string, jd?: string, followups?: Array<{question?:string,answer?:string}>,
+ *           followupText?: string }} ctx 真实分支只用到 messages；Mock 分支需要三个原始输入才能派生响应
  */
 async function callLLM(messages, timeoutMs, ctx) {
   if (isMockMode()) return { content: JSON.stringify(mockChatCompletion(ctx)), usage: null };
@@ -239,7 +402,9 @@ export async function handleRewriteRequest({
   for (const attempt of attempts) {
     let raw;
     try {
-      const llmResult = await llmCall(attempt.messages, attempt.timeoutMs, { experience });
+      // Issue #19/#23：Mock 分支此前只拿到 experience，导致 JD 与 followups 被完全忽略
+      // （FR-5 关键词与 JD 脱钩、FR-6 补充后输出不变）。此处把三个原始输入一并传入。
+      const llmResult = await llmCall(attempt.messages, attempt.timeoutMs, { experience, jd, followups, followupText });
       lastUsage = llmResult?.usage ?? null;
       raw = llmResult?.content;
     } catch (e) {
