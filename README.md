@@ -96,7 +96,7 @@ Serverless handler（api/rewrite.js）
 
 ## 质量保障
 
-- **139 项 node:test 单测**：Prompt 构建、输入/输出七道校验、限流器、handler 集成（200/400/405/429/500/502/504/Mock 确定性）、上游请求体构造与 thinking 下发策略、`.env` 加载器（不覆盖语义/缺失容错）、前端契约适配（错误码映射/超时/结构校验）、dev-server HTTP 冒烟；
+- **142 项 node:test 单测**：Prompt 构建、输入/输出七道校验、限流器、handler 集成（200/400/405/429/500/502/504/Mock 确定性）、上游请求体构造与 thinking 下发策略、`.env` 加载器（行内注释/不覆盖语义/缺失容错）、前端契约适配（错误码映射/超时/结构校验）、dev-server HTTP 冒烟；
 - **CI 门禁**：每次 push / PR 自动执行 `npm test` + `npm run build`（GitHub Actions，ubuntu-latest + Node 20）；
 - **压测工具**：`scripts/load-test.mjs` 提供 Mock 层两层压测（不烧钱）；
 - **挂起项**：真实样本回归集（T10，需 User A/B 各 ≥3 条）随 M2 单独提交；真实 LLM 调用实测（T9，≥30 次 P95）待用户提供 API Key 后执行，选型推演见 `docs/llm-selection.md`。

@@ -60,6 +60,21 @@ describe('parseEnv 解析规则', () => {
   test('后者覆盖同名键（与常规 .env 语义一致）', () => {
     assert.deepEqual(parseEnv('A=1\nA=2'), { A: '2' });
   });
+
+  test('未加引号的值剥离行内注释（避免把注释当成密钥的一部分）', () => {
+    assert.deepEqual(parseEnv('LLM_API_KEY=sk-x # 这是我的 Key'), { LLM_API_KEY: 'sk-x' });
+    assert.deepEqual(parseEnv('PORT=8787#紧邻无空格'), { PORT: '8787' });
+  });
+
+  test('已加引号的值保留 #（兼容含 # 的密钥，不被误截）', () => {
+    assert.deepEqual(parseEnv('KEY="a#b"'), { KEY: 'a#b' });
+    assert.deepEqual(parseEnv("KEY='a#b #c'"), { KEY: 'a#b #c' });
+  });
+
+  test('值以 # 开头时判为行内注释 → 值为空（使 Mock 判定正确，不会拿注释去调真实接口）', () => {
+    assert.deepEqual(parseEnv('LLM_API_KEY=# 还没填'), { LLM_API_KEY: '' });
+    assert.deepEqual(parseEnv('LLM_API_KEY=   # 只有注释'), { LLM_API_KEY: '' });
+  });
 });
 
 describe('loadEnv 加载语义', () => {

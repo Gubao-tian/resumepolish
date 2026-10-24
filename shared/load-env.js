@@ -11,8 +11,10 @@
  * 而原先 `npm start` 不会读取它 —— 用户填了 Key 仍会静默进入 Mock 模式（缺陷 #18 修复）。
  *
  * 规则：
- * - 忽略空行与 `#` 开头的注释行；
+ * - 忽略空行与 `#` 开头的整行注释；
  * - 支持 `KEY=VALUE`（= 两侧空白裁剪），去掉成对单/双引号；
+ * - 支持行内注释：未加引号的值中 `#` 之后的内容被剥离（`KEY=sk-x # 这是我的 Key`）；
+ *   已加引号的值**不剥离**（`KEY="a#b"` 保留 `#`），以兼容含 `#` 的密钥；
  * - 支持 `export KEY=VALUE` 前缀（兼容 shell 习惯写法）；
  * - **不覆盖**已存在的环境变量：真实环境与平台注入优先，避免 .env 误覆盖线上配置；
  * - 文件不存在或读取失败时静默返回，不阻断启动（Mock 演示模式仍可用）。
@@ -39,7 +41,11 @@ export function parseEnv(text) {
     let value = body.slice(eq + 1).trim();
     const quote = value[0];
     if ((quote === '"' || quote === "'") && value.at(-1) === quote && value.length >= 2) {
-      value = value.slice(1, -1);
+      value = value.slice(1, -1); // 已加引号：原样保留（含 # 的密钥不被截断）
+    } else {
+      // 未加引号：剥离行内注释，避免「KEY=sk-x # 注释」把注释当成密钥的一部分
+      const hash = value.indexOf('#');
+      if (hash >= 0) value = value.slice(0, hash).trim();
     }
     out[key] = value;
   }
