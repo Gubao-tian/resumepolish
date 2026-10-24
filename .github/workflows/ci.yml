@@ -12,6 +12,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install
+      # npm ci（而非 npm install）：严格按 package-lock.json 安装，确保 CI 与本地、与他人环境的依赖树完全一致；
+      # 一旦 package.json 与 lockfile 不同步，CI 会立即失败（而不是悄悄装上不同版本）。
+      - run: npm ci
       - run: npm test
       - run: npm run build
