@@ -345,6 +345,44 @@ describe('JD 停用词补充：时间量词与邮箱/域名不得成为关键词
   });
 });
 
+describe('Issue #41 能力章节候选不足时不得用噪声补满', () => {
+  /** 含「页眉 → 岗位职责 → 任职要求 → 投递方式」的真实整段启事 */
+  const JD_REAL =
+    '工作地点：北京海淀。日薪 200 元，本科及以上在读。岗位职责：1. 负责信息流投放账户搭建与日常优化；2. 跟踪投放数据并输出复盘报告。任职要求：1. 熟悉 Excel 与 SQL，对数据敏感；2. 每周到岗 4 天以上，实习 3 个月以上。投递方式：简历命名为「姓名+学校+实习」发送至 hr@example.com';
+
+  test('只给能力词，不得用页眉/页脚噪声补满 5 个', () => {
+    const kws = mockChatCompletion({ experience: EXP, jd: JD_REAL }).keywords.map((k) => k.keyword);
+    for (const noise of ['北京海淀', '实习」发送至', '工作地点', 'com', 'hr']) {
+      assert.ok(!kws.includes(noise), `噪声「${noise}」不应作为关键词，实际=${kws.join(',')}`);
+    }
+    assert.deepEqual(kws, ['Excel', 'SQL', '数据敏感'], `应只给能力词，实际=${kws.join(',')}`);
+  });
+
+  test('宁缺毋滥：能力章节只有 3 个候选就只给 3 个，不补位到 5 个', () => {
+    const r = mockChatCompletion({ experience: EXP, jd: JD_REAL });
+    assert.ok(r.keywords.length > 0, '不得为空');
+    assert.ok(r.keywords.length < 5, `不足 5 个时不应补位，实际 ${r.keywords.length} 个`);
+  });
+
+  test('词组型 JD（无章节标题）不得退化：仍按原逻辑给出全部能力词', () => {
+    const kws = mockChatCompletion({
+      experience: EXP,
+      jd: '产品经理实习生：需求分析、原型设计、用户调研',
+    }).keywords.map((k) => k.keyword);
+    assert.deepEqual(kws, ['需求分析', '原型设计', '用户调研'], `词组型 JD 应保持原有输出，实际=${kws.join(',')}`);
+  });
+
+  test('无章节标题的 JD 兜底不得为空（英文 JD / 短 JD）', () => {
+    for (const jd of [
+      'Responsible for user growth, familiar with SQL and Excel, data driven',
+      '运营实习生：数据分析',
+    ]) {
+      const kws = mockChatCompletion({ experience: EXP, jd }).keywords.map((k) => k.keyword);
+      assert.ok(kws.length > 0, `JD「${jd}」的 keywords 不得为空`);
+    }
+  });
+});
+
 describe('Issue #38 已回答但无数字时不得出现死胡同', () => {
   const Q = '这段经历带来的可量化结果是多少？';
 

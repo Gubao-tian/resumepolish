@@ -321,7 +321,13 @@ function extractJdKeywords(jd, rewritten) {
   }
   // 分数相同时保持文档顺序，保证结果确定（ADR-3）
   scored.sort((a, b) => b.score - a.score || a.order - b.order);
-  const picked = scored.slice(0, 5).map((s) => s.kw);
+  // Issue #41：宁缺毋滥。JD 里能识别出能力章节时只取能力章节内的候选，
+  // 不足 5 个也**不**拿页眉/页脚的零分噪声补位——「待补充（JD 中出现）：北京海淀」
+  // 对用户毫无意义，与 Issue #33「能力词取到 + 不要垃圾词」的诉求直接冲突。
+  // 识别不出能力章节（词组型 JD，如「需求分析、原型设计、用户调研」无章节标题）
+  // 或章节内根本没有候选时，仍回退到全量候选，避免 keywords 退化为空。
+  const inCap = scored.filter((s) => s.score >= 100);
+  const picked = (ranges.length > 0 && inCap.length > 0 ? inCap : scored).slice(0, 5).map((s) => s.kw);
   if (picked.length === 0 && jd.trim().length > 0) {
     // JD 切不出候选时至少给一项，避免 keywords 为空导致演示效果缺失
     picked.push(stripFunctionChars(jd.trim().slice(0, 6)) || jd.trim().slice(0, 6));
