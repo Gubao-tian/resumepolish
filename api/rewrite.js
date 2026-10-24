@@ -70,7 +70,15 @@ const JD_SECTION_HEADINGS = new Set([
  * 片段首尾的虚词单字——「对投放」「负责信息流投放与」这类被标点切碎的残片
  * 需剥掉首尾虚词，否则会产出带拖尾的半残短语（Issue #29）。
  */
-const JD_FUNCTION_CHAR = /^[的了对和与及等其将已在为以从到并把被让使给或因所很再又还就也很]$/;
+const JD_FUNCTION_CHAR = /^[的了和与及等其将已在为以从到并把被让使给或因所很再又还就也很]$/;
+
+/**
+ * 仅在**句首**可剥的虚词（Issue #42）。
+ * 「对」作为句首虚词要剥掉（「对投放效果负责」→「投放效果负责」），
+ * 但它也是「校对 / 对账 / 对接」等真实能力词的组成部分——
+ * 若放在两端可剥集合里，句尾的「对」会被误剥成「负责校 / 负责对」。
+ */
+const JD_FUNCTION_CHAR_LEADING_ONLY = /^[对]$/;
 
 /** 剥掉片段首尾的虚词单字，直到两端都不再是虚词 */
 function stripFunctionChars(p) {
@@ -78,10 +86,12 @@ function stripFunctionChars(p) {
   let changed = true;
   while (changed && s.length > 0) {
     changed = false;
-    if (JD_FUNCTION_CHAR.test(s[0])) {
+    // 句首可剥：普通虚词 + 仅句首可剥的「对」
+    if (JD_FUNCTION_CHAR.test(s[0]) || JD_FUNCTION_CHAR_LEADING_ONLY.test(s[0])) {
       s = s.slice(1);
       changed = true;
     }
+    // 句尾只剥普通虚词，「对」不在内（保护「校对/对账/对接」）
     if (s.length > 0 && JD_FUNCTION_CHAR.test(s[s.length - 1])) {
       s = s.slice(0, -1);
       changed = true;
@@ -312,9 +322,13 @@ function capabilityRanges(jd) {
 }
 
 function extractJdKeywords(jd, rewritten) {
-  // 先合并英文工具名、再按长度过滤——长度上限若放在切分阶段，
-  // 会把 `Adobe Premiere`（14 字）在合并前就滤掉，工具名保护失效（Issue #40）
-  const parts = mergeCamelToolNames(splitJdParts(jd)).filter((p) => p.text.length <= 12);
+  // 长度上限需**区分语言**（Issue #40 + #41 的平衡点）：
+  // - 中文长句片段（如「负责信息流投放账户搭建与日常优化」14 字）是噪声，须限长；
+  // - 英文工具名（Google Analytics 16 字 / Microsoft Office）是真实能力词，不得限长。
+  // 一刀切去掉上限会让中文长句漏进能力章节、破坏 #41「宁缺毋滥」；一刀切 ≤12 又会砍掉英文工具名。
+  const parts = mergeCamelToolNames(splitJdParts(jd)).filter((p) =>
+    /^[A-Za-z]/.test(p.text) ? true : p.text.length <= 8
+  );
   const ranges = capabilityRanges(jd);
   const seen = new Set();
   /** @type {Array<{ kw: string, score: number, order: number }>} */
@@ -329,6 +343,12 @@ function extractJdKeywords(jd, rewritten) {
     // 剥首尾虚词：句子型 JD 被标点切碎后会产生「对投放效果负责」「负责信息流投放与」这类残片
     kw = stripFunctionChars(kw);
     if (kw.length < 2) continue;
+    // Issue #40 残片：以「每周/每天」这类句首数量词开头的片段是「每周输出至少」「条选题储备」
+    // 这类编号职责句被切碎后的动词残片，不是能力词——整体剔除，不留「每周输出至少」这种怪词。
+    if (/^(?:每周|每天|每月|每年|每日)/.test(kw)) continue;
+    // 以量词开头的残片：「每周输出至少 3 条选题储备」被剥掉「每周」后，
+    // 剩余「条选题储备」「次活动」这类量词打头的残片同样不是能力词。
+    if (/^(?:条|次|篇|个|场|期|轮|款|套|份|版)/.test(kw)) continue;
     // 章节标题不是能力关键词（「待补充（JD 中出现）：岗位职责」对用户毫无意义）；
     // 页眉/页脚标题（工作地点/投递方式/公司介绍…）同理——它们只是结构标记，不是能力词
     if (JD_SECTION_HEADINGS.has(kw) || NON_CAPABILITY_HEADINGS.includes(kw)) continue;

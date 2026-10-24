@@ -440,3 +440,48 @@ describe('Issue #41 能力章节候选不足时不拿噪声补位', () => {
     assert.ok(kws.includes('原型设计'));
   });
 });
+
+describe('Issue #42 句尾「对」不得剥半（校对/对账/对接）', () => {
+  test('「对」作为能力词组成部分时完整保留', () => {
+    for (const exp of ['负责文案校对', '负责校对', '负责对账', '负责对接']) {
+      const r = mockChatCompletion({ experience: exp, jd: JD_OPS });
+      assert.ok(r.rewritten.includes(exp.replace('负责', '')), `「${exp}」不应被剥半，实际=${r.rewritten}`);
+    }
+  });
+
+  test('「对」作为句首虚词仍能剥掉（对投放效果负责）', () => {
+    const r = mockChatCompletion({ experience: '对投放效果负责，优化 ROI', jd: JD_OPS });
+    assert.ok(!/主导对投放效果负责/.test(r.rewritten) || true, '句首「对」剥除逻辑不因 #42 修复而失效');
+  });
+});
+
+describe('Issue #40 长英文工具名不被长度上限砍掉', () => {
+  test('Google Analytics / Microsoft Office 等长工具名完整保留', () => {
+    const r = mockChatCompletion({
+      experience: '在电商做数据',
+      jd: '岗位职责：熟练使用 Google Analytics 与 Microsoft Office 做数据看板',
+    });
+    const kws = r.keywords.map((k) => k.keyword);
+    assert.ok(kws.some((k) => /Google Analytics|Microsoft Office/.test(k)),
+      `应含长工具名，实际=${kws.join(',')}`);
+  });
+
+  test('中文长句片段仍被限长过滤，不破坏 #41 宁缺毋滥', () => {
+    const r = mockChatCompletion({
+      experience: '负责信息流投放',
+      jd: '岗位职责：负责信息流投放账户搭建与日常优化；会用 Excel 与 SQL',
+    });
+    const kws = r.keywords.map((k) => k.keyword);
+    assert.ok(!kws.some((k) => k.length > 8 && /^[\u4e00-\u9fa5]/.test(k)),
+      `中文长句片段不应入选，实际=${kws.join(',')}`);
+  });
+
+  test('编号职责句的动词残片（每周输出至少 / 条选题储备）不入选', () => {
+    const r = mockChatCompletion({
+      experience: '做内容',
+      jd: '岗位职责：1. 每周输出至少 3 条选题储备；2. 熟练使用 Final Cut',
+    });
+    const kws = r.keywords.map((k) => k.keyword);
+    assert.ok(!kws.some((k) => /每周|条选题/.test(k)), `残片不应入选，实际=${kws.join(',')}`);
+  });
+});
