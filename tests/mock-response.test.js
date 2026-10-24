@@ -18,6 +18,8 @@ import { PLACEHOLDER_TOKEN } from '../shared/prompt.js';
 
 const EXP = '在某电商公司运营岗实习，负责信息流投放';
 const EXP_WITH_DECIMAL = '预算 3.2 万元，覆盖 2 个平台';
+/** 通用运营岗 JD（词组型） */
+const JD_OPS = '运营实习生：投放优化、数据分析';
 
 describe('Mock 消费 JD（Issue #19：FR-5 关键词不得与 JD 脱钩）', () => {
   test('关键词取自 JD，而非硬编码的内容生产/数据分析', () => {
@@ -179,5 +181,103 @@ describe('Mock 确定性与结构（ADR-3）', () => {
     assert.equal(typeof r.rewritten, 'string');
     assert.ok(Array.isArray(r.keywords));
     assert.ok(Array.isArray(r.questions));
+  });
+});
+
+/**
+ * 以下用例来自研发 Code Review PR #26/#30 时定位的问题（Issue #34–#38），
+ * 由 PM 逐条复现确认后修复。此处锁定，防止回归。
+ */
+describe('Issue #34 纯虚词经历不得 500（片段剥离后不得回退非子串）', () => {
+  test('original_segment 始终是 experience 的逐字子串', () => {
+    for (const exp of ['与、和', '的了和', '和']) {
+      const r = mockChatCompletion({ experience: exp, jd: JD_OPS });
+      assert.ok(
+        exp.includes(r.diff[0].original_segment),
+        `「${r.diff[0].original_segment}」必须是「${exp}」的子串——回退到硬编码兜底串会导致第 3 道校验必然失败 → 500`
+      );
+    }
+  });
+
+  test('不得出现硬编码兜底串「这段经历」作为原文片段', () => {
+    const r = mockChatCompletion({ experience: '与、和', jd: JD_OPS });
+    assert.notEqual(r.diff[0].original_segment, '这段经历');
+  });
+});
+
+describe('Issue #35 英文 JD 不得产出虚词关键词', () => {
+  const EN_JD =
+    'We are looking for an intern with good communication skills and experience in data analysis for growth and optimization';
+
+  test('英文虚词（are/for/and/with/good…）不得进入 keywords', () => {
+    const r = mockChatCompletion({ experience: EXP, jd: EN_JD });
+    const kws = r.keywords.map((k) => k.keyword.toLowerCase());
+    for (const w of ['are', 'for', 'and', 'with', 'good', 'the', 'we', 'you', 'our', 'this']) {
+      assert.ok(!kws.includes(w), `英文虚词「${w}」不应作为关键词，实际=${kws.join(',')}`);
+    }
+  });
+
+  test('英文能力词应被保留（data / growth / analysis / intern）', () => {
+    const r = mockChatCompletion({ experience: EXP, jd: EN_JD });
+    const kws = r.keywords.map((k) => k.keyword.toLowerCase());
+    assert.ok(kws.some((k) => ['data', 'growth', 'analysis', 'intern', 'optimization'].includes(k)),
+      `应保留英文能力词，实际=${kws.join(',')}`);
+  });
+});
+
+describe('Issue #36 日期不得被当作可量化成果', () => {
+  const Q = '这段经历带来的可量化结果是多少？';
+
+  test('回答含日期时只取真实成果数字', () => {
+    const r = mockChatCompletion({
+      experience: '在社团做公众号',
+      jd: JD_OPS,
+      followups: [{ question: Q, answer: '从 2023.06 到 2023.09 涨粉 300 人' }],
+    });
+    assert.ok(r.rewritten.includes('300 人'), `应保留真实成果，实际=${r.rewritten}`);
+    assert.ok(!r.rewritten.includes('2023.06'), '日期不得作为可量化成果');
+    assert.ok(!r.rewritten.includes('2023.09'), '日期不得作为可量化成果');
+  });
+
+  test('四位数的阅读量不会被误判为年份（1200 必须保留）', () => {
+    const r = mockChatCompletion({
+      experience: '在社团做公众号',
+      jd: JD_OPS,
+      followups: [{ question: Q, answer: '6 篇，阅读量 1200，平均 400，涨粉 80' }],
+    });
+    for (const n of ['6 篇', '1200', '400', '80']) {
+      assert.ok(r.rewritten.includes(n), `「${n}」应保留，实际=${r.rewritten}`);
+    }
+  });
+});
+
+describe('Issue #37 改写文不得超过 300 字符（片段长度预算）', () => {
+  test('无标点超长经历（350 字）仍产出 ≤300 的改写文', () => {
+    const long = '在2023年6月到9月期间于某电商公司运营岗实习负责信息流广告投放与日常出价调整及素材上新工作并配合完成每周数据复盘与竞品分析以及月度投放策略调整';
+    const exp = long.repeat(3).slice(0, 350);
+    const r = mockChatCompletion({ experience: exp, jd: JD_OPS });
+    assert.ok(r.rewritten.length <= 300, `rewritten 长度 ${r.rewritten.length} 超过 300 上限`);
+    assert.ok(exp.includes(r.diff[0].original_segment), '片段仍须是原文子串');
+  });
+});
+
+describe('Issue #38 已回答但无数字时不得出现死胡同', () => {
+  const Q = '这段经历带来的可量化结果是多少？';
+
+  test('答案无阿拉伯数字时，显示占位符的同时必须给出追问入口', () => {
+    const r = mockChatCompletion({
+      experience: '在社团做公众号',
+      jd: JD_OPS,
+      followups: [{ question: Q, answer: '涨了大概几百人' }],
+    });
+    assert.ok(r.rewritten.includes(PLACEHOLDER_TOKEN), '占位符应保留（不编造数字）');
+    assert.ok(r.questions.length > 0, '不得既显示「待补充」又无任何追问入口（死胡同）');
+    assert.notEqual(r.questions[0].question, Q, '应换一个措辞追问，而非重复同一个问题');
+  });
+
+  test('首次未回答时仍问原问题', () => {
+    const r = mockChatCompletion({ experience: '在社团做公众号', jd: JD_OPS });
+    assert.equal(r.questions.length, 1);
+    assert.equal(r.questions[0].question, Q);
   });
 });

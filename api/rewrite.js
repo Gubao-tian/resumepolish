@@ -125,27 +125,39 @@ const MIN_SEGMENT_LEN = 6;
  * @param {string} text
  * @returns {string}
  */
+/**
+ * 改写片段的长度上限（Issue #37）。
+ * `rewritten = '主导' + 片段 + 尾缀`，须 ≤ Schema 的 300 字上限；
+ * 输入校验只限制输入 ≤300，若片段不加预算，长输入会直接把 rewritten 顶爆 → 500。
+ */
+const MAX_SEGMENT_LEN = 200;
+
 function pickExperienceSegment(text) {
   const clauses = splitClauses(text);
+  /** @type {string} */
+  let piece;
   // 1) 优先保留带阿拉伯数字的子句，并尽量拼上紧邻的前一子句以保留「动作 + 结果」
   const idx = clauses.findIndex((c) => c.text.length >= MIN_SEGMENT_LEN && /\d/.test(c.text));
   if (idx >= 0) {
     if (idx > 0) {
       const merged = text.slice(clauses[idx - 1].start, clauses[idx].end); // 原文连续片段
-      if (merged.trim().length > 0 && merged.length <= 24) return merged;
+      piece = merged.trim().length > 0 && merged.length <= 24 ? merged : clauses[idx].text;
+    } else {
+      piece = clauses[idx].text;
     }
-    return clauses[idx].text;
+  } else {
+    // 2) 第一个长度适中的子句，避免「课程项目」这类过短片段
+    const suitable = clauses.find((c) => c.text.length >= MIN_SEGMENT_LEN && c.text.length <= 20);
+    piece = suitable ? suitable.text : clauses[0] ? clauses[0].text : text.length <= 24 ? text : text.slice(0, 12);
   }
-  // 2) 第一个长度适中的子句，避免「课程项目」这类过短片段
-  const suitable = clauses.find((c) => c.text.length >= MIN_SEGMENT_LEN && c.text.length <= 20);
-  if (suitable) return suitable.text;
-  if (clauses[0]) return clauses[0].text;
-  // 3) 无标点的长句：≤24 字用全文，否则硬切并回避开数字内部
-  if (text.length <= 24) return text;
-  const spans = numberSpans(text);
-  let cut = 12;
-  while (cut > 1 && inSpans(spans, cut)) cut -= 1;
-  return text.slice(0, cut);
+  // 3) 统一施加长度预算：无标点长句会整段进入，必须截断，且切点回避开数字内部
+  if (piece.length > MAX_SEGMENT_LEN) {
+    const spans = numberSpans(piece);
+    let cut = MAX_SEGMENT_LEN;
+    while (cut > 1 && inSpans(spans, cut)) cut -= 1;
+    piece = piece.slice(0, cut);
+  }
+  return piece;
 }
 
 /** JD 切分后的通用词：这些不是「岗位能力关键词」，不应进入 keywords */
@@ -165,7 +177,43 @@ const JD_STOPWORDS = new Set([
   // 出勤/时间类套话：真实启事的任职要求里常见「每周到岗 4 天以上」，
   // 切分后会漏出「每周」「到岗」这类与时间有关、与能力无关的词（Issue #29 残余项）
   '每周', '每天', '到岗', '出勤', '实习时长', '实习期', '长期', '至少', '以上', '以内',
+  // 页眉/页脚套话：地点、薪资、学历、投递方式等，与岗位能力无关（Issue #33）
+  '日薪', '月薪', '薪资', '待遇', '包吃住', 'base', '地点', '城市', '北京', '上海', '广州',
+  '深圳', '杭州', '成都', '武汉', '南京', '西安', '厦门', '苏州', '远程', '线下', '现场',
+  '本科', '硕士', '大专', '学历', '院校', '学校', '年级', '专业', '投递', '邮件', '格式',
+  '命名', '标题', '简历', '附件', '备注', '联系方式', '电话', '微信',
 ]);
+
+/** 英文停用词：英文/中英混排 JD 下，虚词会被当成关键词返回（Issue #35） */
+const JD_STOPWORDS_EN = new Set([
+  'are', 'for', 'and', 'with', 'good', 'the', 'a', 'an', 'of', 'to', 'in', 'on', 'at', 'by',
+  'is', 'be', 'we', 'you', 'our', 'your', 'this', 'that', 'it', 'as', 'or', 'not', 'no',
+  'have', 'has', 'had', 'will', 'can', 'could', 'should', 'would', 'from', 'all', 'any',
+  'more', 'most', 'other', 'such', 'only', 'own', 'same', 'than', 'too', 'very', 'well',
+  'also', 'both', 'each', 'few', 'into', 'out', 'over', 'under', 'up', 'down', 'off', 'per',
+  'via', 'about', 'after', 'before', 'between', 'during', 'through', 'above', 'below',
+  'who', 'whom', 'which', 'what', 'when', 'where', 'how', 'if', 'but', 'so', 'then', 'there',
+  'here', 'these', 'those', 'some', 'like', 'just', 'get', 'got', 'make', 'made', 'need',
+  'want', 'must', 'may', 'might', 'using', 'use', 'used', 'work', 'working', 'team', 'role',
+  'looking', 'candidate', 'skill', 'skills', 'experience', 'ability', 'nice', 'great', 'strong',
+]);
+
+/**
+ * 能力章节标题：JD 里真正描述岗位能力的段落。
+ * Issue #33 的核心——真实启事的文档结构是「页眉（地点/日薪/学历/时长）→ 岗位职责 → 任职要求 → 加分项 → 投递方式」，
+ * 若按文档顺序取前 N 个，名额会被页眉套话吃光，**能力词根本走不到**。故需先识别能力章节。
+ */
+const CAPABILITY_HEADINGS = [
+  '岗位职责', '任职要求', '岗位要求', '任职资格', '职位要求', '工作内容', '工作职责',
+  '能力要求', '主要工作', '职位内容', '我们需要你', '你将负责', '你将参与', '日常工作是',
+];
+
+/** 非能力章节（页眉/页脚）：这些段落里的词应降权，不应占用关键词名额 */
+const NON_CAPABILITY_HEADINGS = [
+  '工作地点', '日薪', '月薪', '薪资待遇', '薪资福利', '福利待遇', '职位诱惑', '投递方式',
+  '简历投递', '邮件标题', '简历命名', '公司介绍', '团队介绍', '关于我们', '加分项',
+  '优先条件', '实习时长', '到岗时间', '工作时间', '面试方式',
+];
 
 /**
  * 从 JD 提取候选关键词（Issue #19：此前硬编码「内容生产/数据分析」，与传入的 JD 完全无关）。
@@ -174,34 +222,90 @@ const JD_STOPWORDS = new Set([
  * @param {string} jd
  * @param {string} rewritten
  */
+/** JD 切分符（含空白与常见分隔符号） */
+const JD_SPLIT_RE = /[，。、；：！？,.;:!?\s/（）()【】[\]<>《》“”"'\-—+]+/g;
+
+/**
+ * 按标点切分 JD，并**记录每个片段在原文中的起始下标**——
+ * 位置信息是判断「该词是否位于能力章节内」的前提（Issue #33）。
+ * @param {string} jd
+ * @returns {Array<{ text: string, start: number }>}
+ */
+function splitJdParts(jd) {
+  const out = [];
+  let last = 0;
+  let m;
+  JD_SPLIT_RE.lastIndex = 0;
+  while ((m = JD_SPLIT_RE.exec(jd)) !== null) {
+    if (m.index > last) out.push({ text: jd.slice(last, m.index), start: last });
+    last = m.index + m[0].length;
+  }
+  if (last < jd.length) out.push({ text: jd.slice(last), start: last });
+  return out
+    .map((p) => ({ text: p.text.trim(), start: p.start }))
+    .filter((p) => p.text.length >= 2 && p.text.length <= 8);
+}
+
+/**
+ * 定位 JD 中「能力章节」的字符区间 [start, end)。
+ * 区间起点 = 能力章节标题之后；终点 = 下一个任意章节标题（能力或非能力）或 JD 末尾。
+ * @param {string} jd
+ * @returns {Array<[number, number]>}
+ */
+function capabilityRanges(jd) {
+  const ALL = [...CAPABILITY_HEADINGS, ...NON_CAPABILITY_HEADINGS, ...JD_SECTION_HEADINGS];
+  /** @type {Array<[number, number]>} */
+  const ranges = [];
+  for (const h of CAPABILITY_HEADINGS) {
+    let i = jd.indexOf(h);
+    while (i >= 0) {
+      let end = jd.length;
+      for (const other of ALL) {
+        if (other === h) continue;
+        const j = jd.indexOf(other, i + h.length);
+        if (j >= 0 && j < end) end = j;
+      }
+      ranges.push([i + h.length, end]);
+      i = jd.indexOf(h, i + h.length);
+    }
+  }
+  return ranges;
+}
+
 function extractJdKeywords(jd, rewritten) {
-  const parts = jd
-    .split(/[，。、；：！？,.;:!?\s/（）()【】[\]<>《》“”"'\-—+]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length >= 2 && s.length <= 8);
+  const parts = splitJdParts(jd);
+  const ranges = capabilityRanges(jd);
   const seen = new Set();
-  const candidates = [];
+  /** @type {Array<{ kw: string, score: number, order: number }>} */
+  const scored = [];
   for (const p of parts) {
-    // 剥离职位/方向类后缀：「内容运营实习」→「内容运营」。
-    // 与其穷举职位名，不如统一剥后缀——剥离后仍是 JD 的子串，不改变溯源口径。
-    // 后缀剥离：末尾的「及以上」也一并剥掉，使「本科及以上」→「本科」→ 命中学历类停用词被剔除
-    // （学历门槛不是能力关键词，真实 JD 的任职要求里很常见）
-    let kw = p.replace(/(?:实习生|实习|岗|方向|相关|能力|经验|及以上|以上|以下)$/, '');
+    // 剥离职位/方向类后缀：「内容运营实习」→「内容运营」；末尾「及以上/以上/以下」同理，
+    // 使「本科及以上」→「本科」→ 命中学历类停用词被剔除
+    let kw = p.text.replace(/(?:实习生|实习|岗|方向|相关|能力|经验|及以上|以上|以下)$/, '');
     // 剥首尾虚词：句子型 JD 被标点切碎后会产生「对投放效果负责」「负责信息流投放与」这类残片
     kw = stripFunctionChars(kw);
     if (kw.length < 2) continue;
     // 章节标题不是能力关键词（「待补充（JD 中出现）：岗位职责」对用户毫无意义）
     if (JD_SECTION_HEADINGS.has(kw)) continue;
-    // 纯英文片段过短（如从「AB 测试」里切出的「AB」）无意义；≥3 字母的 ROI / SQL / Excel 保留
+    // 纯英文片段过短（如从「A/B 测试」里切出的「AB」）无意义；≥3 字母的 ROI / SQL / CTR 保留
     if (/^[A-Za-z]{1,2}$/.test(kw)) continue;
-    if (JD_STOPWORDS.has(kw) || seen.has(kw) || !/[\u4e00-\u9fa5A-Za-z]/.test(kw)) continue;
+    if (JD_STOPWORDS.has(kw)) continue;
+    if (JD_STOPWORDS_EN.has(kw.toLowerCase())) continue; // 英文虚词（are / for / and…）
+    if (seen.has(kw) || !/[\u4e00-\u9fa5A-Za-z]/.test(kw)) continue;
     seen.add(kw);
-    candidates.push(kw);
+
+    // 打分而非「按文档顺序取前 N」——这是 Issue #33 的结构性修复：
+    // 真实启事的能力词集中在中段（岗位职责/任职要求），若顺序取前 N 会被页眉套话占满名额。
+    const inCapability = ranges.some(([s, e]) => p.start >= s && p.start < e);
+    let score = 0;
+    if (inCapability) score += 100; // 位于能力章节：决定性权重
+    if (kw.length >= 2 && kw.length <= 6) score += 20; // 名词短语通常落在这个长度
+    if (/^[A-Za-z]{3,}$/.test(kw)) score += 10; // 英文缩写（ROI/SQL/CTR）多为真实能力词
+    scored.push({ kw, score, order: scored.length });
   }
-  // 句子型 JD 切出的是**句子片段**（「负责信息流投放」），而真实的能力名词通常更短
-  // （「数据敏感」「SQL」「Excel」）。按长度升序优先，让能力词排在长句片段之前。
-  candidates.sort((a, b) => a.length - b.length);
-  const picked = candidates.slice(0, 5);
+  // 分数相同时保持文档顺序，保证结果确定（ADR-3）
+  scored.sort((a, b) => b.score - a.score || a.order - b.order);
+  const picked = scored.slice(0, 5).map((s) => s.kw);
   if (picked.length === 0 && jd.trim().length > 0) {
     // JD 切不出候选时至少给一项，避免 keywords 为空导致演示效果缺失
     picked.push(stripFunctionChars(jd.trim().slice(0, 6)) || jd.trim().slice(0, 6));
@@ -218,6 +322,17 @@ function extractJdKeywords(jd, rewritten) {
 
 /** 数字追问的固定文案：保持稳定，使「已回答则不重复问」的判定不因文案变化而失效 */
 const NUMBER_QUESTION = '这段经历带来的可量化结果是多少？';
+
+/** 追问过但答案里仍无阿拉伯数字时的二次追问（Issue #38，避免用户看到「待补充」却无从补充） */
+const NUMBER_FOLLOWUP_QUESTION = '能否补充更精确的数字（如具体人数、金额或百分比）？';
+
+/**
+ * 日期 / 时间段样式，用于把日期从「可量化成果」中剔除（Issue #36）：
+ * 2023.06、2023-09、2023年、2023、6月、6月9日 等。
+ */
+// 年份限定为 19xx / 20xx 形态：若放宽成任意 \d{4}，「阅读量 1200」会被误判为年份而丢掉真实成果
+const DATE_LIKE_RE =
+  /^(?:(?:19|20)\d{2}[.\-/年]\d{1,2}(?:[.\-/月]\d{1,2})?日?|(?:19|20)\d{2}年?|\d{1,2}月(?:\d{1,2}日?)?)$/;
 
 /**
  * Mock 确定性响应（ADR-3）：由 experience / jd / followups 三者派生。
@@ -237,7 +352,13 @@ export function mockChatCompletion({ experience = '', jd = '', followups = [] } 
     .map((f) => `${f?.question ?? ''}${f?.answer ?? ''}`)
     .join('\n');
 
-  const slice = pickExperienceSegment(text).replace(/[的了和与及等其将已并]+$/, '').trim() || '这段经历';
+  const rawPiece = pickExperienceSegment(text);
+  const stripped = rawPiece.replace(/[的了和与及等其将已并]+$/, '').trim();
+  // Issue #34：剥离后为空时**不得**回退到硬编码兜底串。
+  // 「与、和」这类纯虚词输入的片段会被整个剥成空，若回退成 '这段经历'，
+  // 该串并非 experience 的子串 → 输出校验第 3 道必然失败 → 500。
+  // 改为保留未剥离的原文片段，确保 original_segment 始终是合法子串。
+  const slice = stripped.length > 0 ? stripped : rawPiece.trim();
   const passive = /^(?:负责|参与|协助)\s*/;
   const hadPassive = passive.test(slice);
   const core = slice.replace(passive, '').trim() || '这段经历';
@@ -255,7 +376,11 @@ export function mockChatCompletion({ experience = '', jd = '', followups = [] } 
   // 这些数字均来自 followupText（契约 §6 溯源白名单），全部引用不构成虚构。
   const suppliedNums = (
     answersText.match(/\d+(?:\.\d+)?\s*(?:万元|亿元|万人|千人|万|个|人|次|篇|条|份|%|％)?/g) ?? []
-  ).slice(0, 4);
+  )
+    // Issue #36：日期/时间段不是「成果」。PR #30 改为「取全部数字」后，
+    // 用户回答「从 2023.06 到 2023.09 涨粉 300 人」会把两个日期写成可量化成果，比修复前更糟。
+    .filter((s) => !DATE_LIKE_RE.test(s.trim()))
+    .slice(0, 4);
   const resultPart = hasNumber
     ? ''
     : suppliedNums.length > 0
@@ -265,8 +390,19 @@ export function mockChatCompletion({ experience = '', jd = '', followups = [] } 
   const rewritten = `${lead}${core}${resultPart}`;
   const asked = new Set(followups.map((f) => String(f?.question ?? '')));
   const questions = [];
-  if (!hasNumber && suppliedNums.length === 0 && !asked.has(NUMBER_QUESTION)) {
-    questions.push({ question: NUMBER_QUESTION, blocking: false, reason: '缺少数字成果，影响面试说服力' });
+  if (!hasNumber && suppliedNums.length === 0) {
+    if (!asked.has(NUMBER_QUESTION)) {
+      questions.push({ question: NUMBER_QUESTION, blocking: false, reason: '缺少数字成果，影响面试说服力' });
+    } else if (!asked.has(NUMBER_FOLLOWUP_QUESTION)) {
+      // Issue #38：用户已回答该追问但答案里没有阿拉伯数字（如「涨了大概几百人」），
+      // 若就此不再追问，改写文会显示「待补充」而界面没有任何补充入口 → 死胡同。
+      // 此处换一个措辞再问一次，给用户一条能消除占位的路径。
+      questions.push({
+        question: NUMBER_FOLLOWUP_QUESTION,
+        blocking: false,
+        reason: '你的补充里还没有可量化的数字，简历上没有数字会削弱说服力',
+      });
+    }
   }
 
   return {
