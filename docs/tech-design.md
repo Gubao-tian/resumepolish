@@ -1,6 +1,6 @@
 # 简历润笔 ResumePolish V1.0 技术设计文档
 
-> 状态：**已评审定稿 v1.1**（v1.0 经两位工程师澄清裁决；v1.1 修订 ADR-1 工具链决策与工作量口径，依据前端实现证据）
+> 状态：**已评审定稿 v1.2**（v1.0 澄清裁决 → v1.1 曾试修订 ADR-1 为前端 TS → v1.2 依据实现证据撤回该修订，ADR-1 v1 维持）
 > 关联：[PRD V1.0](https://github.com/Gubao-tian/resume-optimizer-prd) · [API 契约 v1.2](api-contract.md)
 > 日期：2026-10-24 ｜ 作者：产品经理（团队 lead）｜ 评审：研发工程师 1（后端/全栈）、研发工程师 2（前端/AI 应用）
 
@@ -35,40 +35,42 @@ V1.0 唯一核心功能（PRD §7）：**JD 对照的单条经历改写**。用�
                                       └──────────────────┘
 ```
 
-- 前端：静态 SPA（React + Vite + TypeScript），`base` 由 `VITE_BASE` 注入（默认 `/`，适配 Vercel 同域部署）；
+- 前端：静态 SPA（React 18 + Vite 5，ESM JS + JSX），同源部署（Vercel），开发态 `/api` 代理到 `127.0.0.1:8787`；
 - 后端：Vercel Serverless Function（Node 18+ 运行时，原生 `fetch`），仅作 LLM 代理，隐藏 API Key；
-- 共享核心：`shared/` 纯函数模块（Prompt 构建 / 输出校验 / 数字归一化 / 负面词表），ESM JavaScript + JSDoc，服务端与 node:test 单测共用，保证"契约即代码"；
+- 共享核心：`shared/` 纯函数模块（Prompt 构建 / 输出校验 / 数字归一化 / 负面词表 / 限流器），服务端与 node:test 单测共用，保证"契约即代码"；
 - Mock 模式为一等公民：无 Key 可完整演示与测试，仅替换 `callLLM`，限流/校验/降级全链路真实。
 
 ## 3. 模块划分与职责
 
-| 路径 | 语言/工具 | 职责 | 作者 |
-|------|-----------|------|------|
-| `shared/*.js` | JS + JSDoc | 负面词表 / 数字归一化 / Schema / Prompt 构建 / 输入输出校验 / 限流器（纯函数） | E1 |
-| `api/rewrite.js` | JS | Serverless handler（编排上述模块，Vercel 约定入口） | E1 |
-| `server/dev-server.js` | JS | 本地单端口服务器（`/api/rewrite` + `dist/` 静态托管） | E1 |
-| `scripts/load-test.mjs` | JS | 两层压测脚本（Mock 层 + 真实层） | E1 |
-| `src/**` | TS + React | 单页工具前端（types/api.ts 即契约的类型化） | E2 |
-| `src/mocks/**` | TS + MSW | 前端 API mock（开发/测试双端） | E2 |
-| `tests/*.test.js` | node:test | 服务端单测与集成测试 | E1 |
-| `src/**/*.test.ts(x)` | vitest + Testing Library | 前端单测/组件测试/集成测试 | E2 |
-| `.github/workflows/ci.yml` | — | push/PR 触发 `npm run test:all` + `npm run build` | E1 |
-| `vercel.json` | — | 部署路由（静态 + `/api/*` → Function） | E1 |
+| 路径 | 职责 | 作者 | PR |
+|------|------|------|-----|
+| `shared/negative-words.js` | 负面词表 v1（25 词） | E1 | #2 |
+| `shared/numbers.js` | 数字归一化与包含判断纯函数 | E1 | #2 |
+| `shared/schema.js` | 四要素 RESPONSE_SCHEMA + 结构校验 | E1 | #2 |
+| `shared/prompt.js` | `buildMessages({experience, jd, followups})` | E1 | #2 |
+| `shared/validate.js` | `validateInput` / `validateOutput`（七道校验 + 关键词降级） | E1 | #2 |
+| `src/api.js` | 前端 API 客户端（30s 超时/错误码映射/结构校验） | E2 | #3 |
+| `src/components/ExperienceForm.jsx` | 输入区（计数/内联错误/隐私声明） | E2 | #3 |
+| `src/components/ResultPanel.jsx` | 四要素结果区 + 反问补充重生成 | E2 | #3 |
+| `src/App.jsx` | 状态机 + 错误态 + followups 累积 | E2 | #3 |
+| `tests/*.test.js` | node:test 单测与集成（服务端 + 前端契约适配） | E1/E2 | #2/#3 |
+| `.github/workflows/ci.yml` | push/PR 触发 `npm test` + `npm run build` | E1 | #2 |
+| `shared/ratelimit.js`、`api/rewrite.js`、`server/dev-server.js`、`scripts/load-test.mjs`、`vercel.json`、`tests/ratelimit.test.js`、`tests/rewrite-api.test.js`、`docs/llm-selection.md` | Serverless 代理与压测 | E1 | #4（进行中） |
 
 ## 4. 关键设计决策（ADR）
 
-### ADR-1（v2，取代 v1）：前后端工具链分离——前端 TypeScript，服务端 ESM JavaScript
+### ADR-1（v1，维持）：全仓 ESM JavaScript + JSX，零 TypeScript
 
-- **背景**：v1 决策为全仓 ESM JS + JSDoc（最小工具链）。前端实现证据：`src/types/api.ts` 将契约固化为类型（请求/响应/错误码），配合 25 项 vitest + Testing Library + MSW 测试全绿，契约安全与测试资产价值超过工具链统一性收益。
-- **决策**：`src/**` 用 TypeScript（vitest 跑测试）；`shared/`、`api/`、`server/`、`scripts/`、`tests/` 保持 ESM JS + node:test。服务端 TS 化仍列 V1.1。
-- **后果**：CI 需跑两套测试运行器（`npm run test:all`）；`npm test` 必须 glob 限定 `tests/**/*.test.js`——实测 Node 22 默认发现会误抓 `src/**/*.test.ts` 并因 `vitest` 包不可用而失败（2026-10-24 实测）。
-- **修订纪律**：ADR 冻结后如需偏离，先提修订请求再实施（本次为证据驱动的事后追认，流程教训记入附录 B）。
+- **决策**：`src/**`、`shared/**`、`api/**`、`server/**`、`tests/**` 全部使用 ESM JavaScript（JSX 用于 React 组件）；不引入 TypeScript / tsc / @types；测试用 Node 内置 `node:test`；不引入 vitest / jsdom / MSW / Testing Library。
+- **理由**：契约文档（api-contract.md）+ JSDoc + 前后端双重结构校验已提供接口纪律；最小工具链使 CI 只需 `npm test` + `npm run build` 两条命令，依赖面最小（运行时仅 react/react-dom）。
+- **已知代价（接受）**：V1.0 无组件级测试；前端契约适配以 Node 直测 `src/api.js`（fetch 注入、无 import.meta 依赖）覆盖 17 项，见 tests/web-api.test.js。
+- **修订历史**：v1.1 曾依据前端 TS 原型（25 项 vitest 测试）修订为"前端 TypeScript"（v2）；实现阶段前端最终按派工清单以 JS 交付且 PR #3 不含 package.json 变更，该修订于 v1.2 撤回，ADR-1 v1 维持。教训：派工指令须显式绑定"冻结 ADR 偏离需先请示"。
 
 ### ADR-2：LLM 走 OpenAI 兼容协议，默认 DeepSeek，可替换
 
 - 单一 `callLLM(messages, {timeout})` 封装 `POST {LLM_BASE_URL}/chat/completions`；选型只改环境变量。
-- `temperature=0.3`（稳定性优先）；模型选择主选 DeepSeek 级国产 API（成本约 0.01 元/次，满足 ≤10 元红线；GPT-4 贵且国内访问不稳——PRD §8）。
-- T1 选型实测（主选 + 1 备选）结论随 serverless PR 附上，不阻塞 core PR。
+- `temperature=0.3`（稳定性优先）；主选 DeepSeek 级国产 API（成本约 0.01 元/次，满足 ≤10 元红线；GPT-4 贵且国内访问不稳——PRD §8）。
+- T1 选型结论随 serverless PR（docs/llm-selection.md）附上；**实测数据待用户提供 API Key 后复核**（见裁决 15）。
 
 ### ADR-3：Mock 模式为一等公民
 
@@ -136,53 +138,57 @@ Schema → 理由非空 → 原文子串 → **数字溯源（一票否决）** 
 | 7 | 负面词表 | v1 共 25 词批准签发（附录 A）；扫描范围=`rewritten`+`diff[].rationale`；hit→missed 自动降级 | E1 Q6 |
 | 8 | 命名分歧 | 双工程师共识优先：`rewritten` 纯文本（不拆 action/method/result）；其余字段名取显式命名（diff/keywords/questions） | E1/E2 会商 |
 | 9 | 交互流 | 一次性往返、四要素同屏、反问不阻断（`blocking` 恒 false） | E2 Q1 |
-| 10 | 前端工作量 | 以自底向上口径为准；实际 T1-T9 合计约 6 人日（含 25 项测试，超出原冻结 3.5 的部分为质量资产，予以接纳）；PRD §8.5 前端按 **6 人日**修订，总量约 14.75 人日（≤15） | E2 实测 |
-| 11 | 工具链 | ADR-1 v2：前端 TS + vitest/MSW；服务端 JS + node:test；`npm test` glob 限定 `tests/**/*.test.js` | 实现证据 |
-| 12 | 超时「继续等待」按钮 | **不实现**：服务端总预算 ≤25s 早于前端 30s  abort，前端收到 504 时服务端已放弃，"继续等待"无适用窗口 | E2 Q2 |
-| 13 | 部署目标 | Vercel 同域（ADR-5）；GitHub Pages 不作演示（无 API 运行时）；`base` 由 VITE_BASE 注入保留静态托管灵活性 | E2 提问 |
+| 10 | 前端工作量 | 自底向上口径；实际 T1-T9 约 6 人日（含 17 项契约适配测试，已入库 tests/web-api.test.js）；PRD §8.5 前端按 6 人日修订，总量约 14.75 人日（≤15） | E2 实测 |
+| 11 | 工具链 | ADR-1 v1 维持：全仓 ESM JS + JSX，node:test 单运行器（v1.1 的 v2 修订已撤回，见 ADR-1 修订历史） | 实现证据 |
+| 12 | 超时「继续等待」按钮 | **不实现**：服务端总预算 ≤25s 早于前端 30s abort——超时场景下前端先收到 504 错误响应，"继续等待"没有适用窗口 | E2 Q2 |
+| 13 | 部署目标 | Vercel 同域（ADR-5）；GitHub Pages 不作演示（无 API 运行时） | E2 提问 |
+| 14 | FR-8 隐私声明形态 | **常驻隐私声明行接受**（表单下方常驻"输入仅用于本次生成，不存储、不用于其他用途"）：始终可见优于首访横幅（无 dismissal、无 localStorage、无"已读"状态管理），FR-8 核心诉求（明示不存储）满足 | E1 评审建议 + PM 裁决 |
+| 15 | T1 LLM Key | 团队无 Key：选型按公开参数与定价完成桌面推演（docs/llm-selection.md），**实测数据待用户提供 Key 后复核**；T9 真实调用层（≥30 次 P95）同步挂起，Mock 层验证已完成 | 环境约束 |
 
 ## 10. 任务拆分与里程碑
 
 | ID | 任务 | 负责 | 人日 | 依赖 | 交付物 |
 |----|------|------|------|------|--------|
-| T0 | 契约冻结 + 技术设计文档 | PM | 0.5 | — | docs/*.md |
-| T1 | LLM 选型实测（主选+备选） | E1 | 0.5 | — | 选型报告（随 PR #3） |
+| T0 | 契约冻结 + 技术设计文档 | PM | 0.5 | — | docs/*.md ✅ |
+| T1 | LLM 选型（桌面推演 + 实测待 Key） | E1 | 0.5 | — | docs/llm-selection.md（随 PR #4） |
 | T2-T4 | shared 核心 + 单测 + CI | E1 | 2.0 | T0 | PR #2 ✅ |
-| T5-T9 | 限流/handler/服务器/Mock/压测/部署配置 | E1 | 2.75 | T2-T4 | PR #3 |
-| T10 | 回归脚本 + 12 样本 | E1 | 0.5 | T9 | PR #3 |
-| T12 | Vercel 部署 + 联调 | E1 | 0.5 | 全部 | 演示地址 |
-| F1-F9 | 前端（含 25 项测试） | E2 | 6.0 | T0 | PR #4 |
-| R1-R3 | 交叉 Review（PR #2/#3/#4） | E1/E2 | 1.5 | — | Review 记录 |
+| T5-T9 | 限流/handler/服务器/Mock/压测/部署配置 | E1 | 2.75 | T2-T4 | PR #4（进行中） |
+| T10 | 回归脚本 + 12 样本 | E1 | 0.5 | T9 | PR #4 |
+| T12 | Vercel 部署 + 前后端联调 | E1/E2 | 0.5 | 全部 | 演示地址（待 Key/部署） |
+| F1-F9 | 前端（含 17 项契约适配测试） | E2 | 6.0 | T0 | PR #3 ✅ |
+| R1-R3 | 交叉 Review（PR #2/#3/#4） | E1/E2 | 1.5 | — | Review 记录 ✅（#2/#3 已完成） |
 
 后端合计 ≈ 6.75 人日（T1 不阻塞主线）+ 前端 6.0 + Review 1.5 + 文档 0.5 ≈ **14.75 人日**，落在 PRD §8.5 的 12-15 人日区间。
 
 ## 11. 测试策略
 
-**测试运行器分工（ADR-1 v2）**
+**单一运行器（node:test，零额外依赖）**
 
-| 层 | 运行器 | 命令 | 覆盖 |
-|----|--------|------|------|
-| 服务端 | node:test | `npm test`（=`node --test tests/**/*.test.js`） | shared 纯函数、限流、API 集成（64 项） |
-| 前端 | vitest + Testing Library + MSW | `npm run test:web` | 接口层/组件/主流程（25 项） |
-| 全量 | — | `npm run test:all` | CI 门禁 |
+| 层 | 命令 | 覆盖 |
+|----|------|------|
+| 服务端 + 前端契约适配 | `npm test`（=`node --test`，默认发现 `**/*.test.js`） | shared 纯函数、限流、API 集成、src/api.js 契约适配 |
 
-**服务端单测（node:test）**
+**服务端单测**
 
 - `tests/prompt.test.js`：system 含负面词表/Schema/溯源规则；followups 正确拼接；temperature=0.3；
 - `tests/validate-input.test.js`：长度边界 299/300/301、1999/2000/2001、空/纯空白、控制字符与零宽字符、followups 结构；
 - `tests/validate-output.test.js`：Schema 违规（缺字段/类型错/理由空）、数字溯源（拦截"3 渠道"改"10 渠道"；放行"待补充"；放行 followups 补充；归一化 ３万/30,000/三万/30000/三千五互通）、负面词命中、关键词降级、original_segment 非子串；
-- `tests/numbers.test.js`：归一化边界；
+- `tests/numbers.test.js`：归一化边界（含副词串 NaN 跳过回归用例）；
 - `tests/ratelimit.test.js`：窗口内放行/超限 429/Retry-After；
 - `tests/rewrite-api.test.js`：集成——Mock 模式 200 形状、mock_mode=true、400/429/500 路径。
 
-**前端测试（vitest，25 项）**：接口层 9（400/429/500/超时/非法结构/重试语义/followups 传递）；InputPanel 7；ResultPanel 6；App 主流程集成 3。MSW 覆盖 200/400/429/500/超时五路径。
+**前端契约适配测试**（tests/web-api.test.js，17 项）：400/429/500/超时/非法结构/supplements 传递/followups 累积/Retry-After 解析/结构校验降级。`src/api.js` 以 fetch 注入解耦，无 import.meta 依赖，可在 Node 下直测。
 
 **回归与压测**
 
 - 回归集 12 条（§9 裁决 2）；门槛见契约 §7；
-- 压测两层：Mock 层无限次验证 P95 与限流触发；真实层 ≥30 次记录 P95（需 Key，手动执行）。
+- 压测两层：Mock 层无限次验证 P95 与限流触发（已完成）；真实层 ≥30 次记录 P95（待 Key，裁决 15）。
+
+**测试发现纪律（Node 22 守卫）**：若未来引入 `.test.ts` 文件，`node --test` 默认发现会误抓并因 `vitest` 包不存在而失败——届时须将 test 脚本改为 glob 限定 `tests/**/*.test.js`。V1.0 无 .ts 文件，暂不触发。
 
 **已知风险（E1 提出，回归集度量）**：拉丁 token 硬校验严格——SQL/Python 等出现在输出但原文没有时可能误判 INVALID_OUTPUT；若回归集误报率高，V1.0 增设常见技术名词白名单。
+
+**V1.1 测试项**：①溯源范围扩展至 `questions[].question` 与 `diff[].rationale`（E2 评审建议：反问中幻觉数字同样误导用户）；②组件级测试（vitest + Testing Library，需先修订 ADR-1）。
 
 ## 12. 风险与应对（映射 PRD 第十一章）
 
@@ -201,13 +207,14 @@ Schema → 理由非空 → 原文子串 → **数字溯源（一票否决）** 
 - 免注册免登录；输入仅用于本次生成；
 - 服务端日志禁打印用户输入（lint 规则 + 评审检查项）；
 - Key 仅服务端环境变量；`.env` 不入库（.gitignore）；
-- 响应头 `Cache-Control: no-store`、`X-Content-Storage: none`。
+- 响应头 `Cache-Control: no-store`、`X-Content-Storage: none`；
+- 前端隐私声明常驻展示（裁决 14）。
 
 ## 14. PRD 勘误（随本文档提交修订）
 
 1. §9.3 U1「不低于三分之二」→「不低于 65%」（与 §10.1 北极星口径统一）；
 2. §12.2 发布门禁引用 U1 处同步为 65%；
-3. §8.5 前端工作量「2-3 人日」→「6 人日（自底向上口径，含 25 项前端测试）」；后端 6.75，总量 14.75；
+3. §8.5 前端工作量「2-3 人日」→「6 人日（自底向上口径，含 17 项契约适配测试）」；后端 6.75，总量 14.75；
 4. §8.5「回归集 ≥10 条」→「回归集 12 条（E1/U3 共用）」。
 
 ---
@@ -224,6 +231,7 @@ Schema → 理由非空 → 原文子串 → **数字溯源（一票否决）** 
 - 提交信息：`type(scope): 描述`（feat/fix/docs/test/chore/refactor）；
 - PR 模板：背景 / 内容 / 验证（命令+输出）/ 契约符合性 / 风险；
 - Review：交叉评审（后端 PR 由前端工程师审、前端 PR 由后端工程师审），Google 式清单（正确性/契约/测试/安全/可读性）；
-- CI：push/PR 触发 `npm run test:all` + `npm run build`，红即禁合；
-- 常用命令：`npm run dev`（5173，/api 代理 8787）｜`npm run server`（8787）｜`npm run build`｜`npm start`（单端口演示）｜`npm test`（服务端）｜`npm run test:web`（前端）｜`npm run test:all`；
-- **ADR 修订纪律**：冻结决策如需偏离，先提修订请求并记录证据，再实施；事后追认需在本文档登记（ADR-1 v2 即首例，教训：派工指令应附带"偏离需先请示"的显式约束）。
+- CI：push/PR 触发 `npm test` + `npm run build`，红即禁合；
+- 常用命令：`npm run dev`（5173，/api 代理 8787）｜`npm run server`（8787，Mock 或真实 LLM）｜`npm run build`｜`npm start`（单端口演示）｜`npm test`（node:test 全量）；
+- 环境说明：团队共用单一 GitHub 账户（Gubao-tian），PR 作者无法批准自己的 PR，交叉评审以 COMMENT 形式交付（结论 Approve / Request changes），合入动作由 PM 执行；
+- **ADR 修订纪律**：冻结决策如需偏离，先提修订请求并记录证据，再实施；事后追认需在本文档登记（ADR-1 v1→v2→v1 为首例）。
