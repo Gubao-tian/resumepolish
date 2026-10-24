@@ -114,6 +114,9 @@ export function validateOutput(parsed, sources) {
   });
 
   // 第 4 道：数字溯源（一票否决）。范围：rewritten + diff[].revised_segment（契约 §6）
+  // 取舍记录（交叉评审建议，PM 已确认）：rationale 与 questions[].question 同样展示给用户，
+  // 但契约 §6 明确不纳入本道——理由文本含解释性数字属合理表述，强制溯源会放大误拦；
+  // 反问中的幻觉数字风险由 Prompt 硬规则约束，V1.1 结合回归集数据再评估是否扩展。
   const numberTargets = [['rewritten', value.rewritten], ...value.diff.map((d, i) => [`diff[${i}].revised_segment`, d.revised_segment])];
   for (const [label, text] of numberTargets) {
     for (const num of extractNumbers(text)) {
