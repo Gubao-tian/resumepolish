@@ -39,17 +39,27 @@ function clientIp(req) {
  */
 function mockChatCompletion({ experience }) {
   const text = experience.trim();
-  const cut = text.search(/[，。、；,.;]/);
-  const slice = (cut > 0 && cut <= 12 ? text.slice(0, cut) : text.slice(0, 12)) || '这段经历';
-  const core = slice.replace(/^(?:负责|参与)\s*/, '');
+  const cut = text.search(/[，。、；,.;!?！？]/);
+  // 截断优先级：首个标点处（语义完整）> 短句整句（≤24 字，避免硬切半词）> 12 字片段。
+  // 演示输出若把词切断（如「渠道的日」「运营与维」）会被误认为缺陷，故语义完整优先。
+  const raw =
+    cut > 0 && cut <= 20 ? text.slice(0, cut) : text.length <= 24 ? text : text.slice(0, 12);
+  const slice = raw.replace(/[的了和与及等其将已并]+$/, '').trim() || '这段经历';
+  const passive = /^(?:负责|参与|协助)\s*/;
+  const hadPassive = passive.test(slice);
+  const core = slice.replace(passive, '').trim() || '这段经历';
+  // 数字或拉丁字母开头时补空格，避免「主导3 个渠道」这类粘连
+  const lead = /^[\dA-Za-z]/.test(core) ? '主导 ' : '主导';
   return {
     mock_mode: true,
-    rewritten: `主导${core}，搭建选题模板，形成可复用的内容生产流程`,
+    rewritten: `${lead}${core}，搭建选题模板，形成可复用的内容生产流程`,
     diff: [
       {
         original_segment: slice,
-        revised_segment: `主导${core}，搭建选题模板`,
-        rationale: '「负责」类表述改为「主导」突出 ownership，并补充可复用的方法',
+        revised_segment: `${lead}${core}，搭建选题模板`,
+        rationale: hadPassive
+          ? '「负责」类表述改为「主导」突出 ownership，并补充可复用的方法'
+          : '补充可复用的方法与动作主导性，让成果更可验证',
       },
     ],
     keywords: [
