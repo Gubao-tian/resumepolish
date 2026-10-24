@@ -2,17 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import ExperienceForm from './components/ExperienceForm.jsx';
 import ResultPanel from './components/ResultPanel.jsx';
 import { rewrite } from './api.js';
-
-/** 多轮累积合并：同一问题以后来回答为准，保留首次出现顺序（契约 §2 全量累积） */
-function mergeFollowups(prev, incoming) {
-  const merged = prev.map((item) => ({ ...item }));
-  for (const item of incoming) {
-    const idx = merged.findIndex((f) => f.question === item.question);
-    if (idx >= 0) merged[idx] = { ...item };
-    else merged.push({ ...item });
-  }
-  return merged;
-}
+import { mergeFollowups } from './followups.js';
 
 /** 等待态：骨架 + 已等待秒数。不伪造分阶段进度——后端是单次 LLM 调用，诚实展示 */
 function LoadingPanel() {
