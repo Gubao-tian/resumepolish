@@ -653,9 +653,17 @@ export async function handleRewriteRequest({
   if (method !== 'POST') {
     return finish(errorResponse(405, 'METHOD_NOT_ALLOWED', '只支持 POST 请求'));
   }
+  // Issue #24（场景 2 修正）：限流器此前排在 validateInput **之前**，
+  // 导致被 400 拦下的无效输入（手抖空提交、纯标点、超长）也扣额度——用户「没成功却少了次数」。
+  // 现将 validateInput 提到 limiter.check 之前：只有通过输入校验、真正会进入 LLM 调用的请求才扣额度。
+  // 语义正确性：check() 是「检查是否超限 + 记录一次」合并的，对合法请求前置检查不受影响。
+  const v = validateInput(body);
+  if (!v.ok) {
+    return finish(errorResponse(400, 'INVALID_INPUT', v.error.message, v.error.detail));
+  }
   const rl = limiter.check(ip);
   if (!rl.allowed) {
-    // Issue #24：限流按 IP 计数，而校园网/公司网等 NAT 出口下同一 IP 由多人共用，
+    // Issue #24（场景 1）：限流按 IP 计数，而校园网/公司网等 NAT 出口下同一 IP 由多人共用，
     // 用户可能一次都没提交过却被拦。
     // 文案要点（User A 复验反馈）：原写法「请求过于频繁，请 N 秒后再试（额度按网络出口统计…）」
     // 主句与括号自相矛盾——既然是同网用户合并计算，那就不该说成是「你」频繁。
@@ -669,10 +677,6 @@ export async function handleRewriteRequest({
         { 'Retry-After': String(rl.retryAfterSec) }
       )
     );
-  }
-  const v = validateInput(body);
-  if (!v.ok) {
-    return finish(errorResponse(400, 'INVALID_INPUT', v.error.message, v.error.detail));
   }
   const { experience, jd, followups } = v.data;
   const followupText = followups.map((f) => `问：${f.question}\n答：${f.answer}`).join('\n\n');

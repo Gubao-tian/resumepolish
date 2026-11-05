@@ -155,6 +155,35 @@ describe('handleRewriteRequest 限流（429）', () => {
     assert.match(limited.body.error.message, /网络出口/, '应说明额度按网络出口统计');
     assert.match(limited.body.error.message, /合并计算/, '应说明会与同网用户合并计算');
     assert.match(limited.body.error.message, /\d+ 秒后再试/, '仍须给出可操作的等待时长');
+    // User A 复验反馈：主句若写「请求过于频繁」，与「同网用户合并计算」的解释自相矛盾——
+    // 既然是共用额度，就不该说成是用户自己频繁。锁定这一点，防止改回甩锅式文案。
+    assert.doesNotMatch(limited.body.error.message, /请求过于频繁/, '不得把超限原因归咎于用户');
+  });
+
+  // Issue #24（场景 2）：限流器此前排在 validateInput 之前，无效输入也扣额度。
+  // 修复后，被 400 拦下的请求不得消耗额度——只有通过输入校验、真正进入 LLM 调用的请求才计费。
+  test('被 400 拦下的无效输入不消耗额度', async () => {
+    const limiter = createRateLimiter({ max: 1, windowMs: 60_000 });
+    const opts = { body: VALID_BODY, callLLM: fakeLLM(GOOD_OUTPUT), limiter, ip: '7.7.7.7' };
+
+    // 先发多次无效输入（纯标点 → 400），不得扣额度
+    for (let i = 0; i < 5; i += 1) {
+      const bad = await handleRewriteRequest({ ...opts, body: { experience: '。', jd: '运营实习生：数据分析' } });
+      assert.equal(bad.status, 400, '无效输入应返回 400');
+      assert.equal(bad.body.error.code, 'INVALID_INPUT');
+    }
+
+    // 之后一次合法请求仍应成功（若无效输入扣了额度，这里会 429）
+    const good = await handleRewriteRequest(opts);
+    assert.equal(good.status, 200, `无效输入不得消耗额度，合法请求应仍为 200，实际 ${good.status}`);
+  });
+
+  test('合法请求仍正常消耗额度（校验通过后才 check）', async () => {
+    const limiter = createRateLimiter({ max: 1, windowMs: 60_000 });
+    const opts = { body: VALID_BODY, callLLM: fakeLLM(GOOD_OUTPUT), limiter, ip: '6.6.6.6' };
+    assert.equal((await handleRewriteRequest(opts)).status, 200);
+    // 第二次合法请求应触发 429（额度已被第一次合法请求占用）
+    assert.equal((await handleRewriteRequest(opts)).status, 429);
   });
 });
 
